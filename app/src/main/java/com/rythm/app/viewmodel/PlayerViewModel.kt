@@ -401,8 +401,13 @@ class PlayerViewModel(
         _uiState.update { it.copy(continuousLoop = target) }
     }
 
-    /** A/B 微调（FR-04.8）：±1 帧/±10ms/±100ms 由 UI 换算 deltaMs 传入。 */
-    fun nudgeLoopA(deltaMs: Long) {
+    /** A/B 微调（FR-04.8，微调按钮）：±100ms 由 UI 换算 deltaMs 传入；调整后当前帧精确跟随 A 点。 */
+    fun nudgeLoopA(deltaMs: Long) = nudgeLoopAInternal(deltaMs, exact = true)
+
+    /** 拖动 A 手柄实时跟随（FR-04.8）：exact=false 就近关键帧，拖动流畅，当前帧同步跳转。 */
+    fun nudgeLoopADrag(deltaMs: Long) = nudgeLoopAInternal(deltaMs, exact = false)
+
+    private fun nudgeLoopAInternal(deltaMs: Long, exact: Boolean) {
         val s = _uiState.value
         val a = s.loopStartMs ?: return
         // 上界：选区激活 → B−最短区间；WAIT_B（B 未定）→ 时长（临时登记的 B 不约束 A）
@@ -420,9 +425,16 @@ class PlayerViewModel(
             (newA + MIN_LOOP_MS).coerceAtMost(s.durationMs.coerceAtLeast(newA + 1))
         }
         applyLoopPan(newA, newB)
+        seekTo(newA, exact) // 当前帧跟随 A（FR-04.8）
     }
 
-    fun nudgeLoopB(deltaMs: Long) {
+    /** B 微调（微调按钮）：调整后当前帧精确跟随 B 点。 */
+    fun nudgeLoopB(deltaMs: Long) = nudgeLoopBInternal(deltaMs, exact = true)
+
+    /** 拖动 B 手柄实时跟随：exact=false 就近关键帧。 */
+    fun nudgeLoopBDrag(deltaMs: Long) = nudgeLoopBInternal(deltaMs, exact = false)
+
+    private fun nudgeLoopBInternal(deltaMs: Long, exact: Boolean) {
         val s = _uiState.value
         val a = s.loopStartMs ?: return
         val b = s.loopEndMs ?: return
@@ -431,6 +443,7 @@ class PlayerViewModel(
         val newB = (b + deltaMs).coerceIn(lower, upper)
         if (newB == b) return
         applyLoopPan(a, newB)
+        seekTo(newB, exact) // 当前帧跟随 B（FR-04.8）
     }
 
     private fun applyLoopPan(a: Long, b: Long) {

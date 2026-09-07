@@ -59,6 +59,8 @@ class PlayerControlsSmokeTest {
                     onClearSelection = {},
                     onNudgeA = {},
                     onNudgeB = {},
+                    onNudgeDragA = {},
+                    onNudgeDragB = {},
                     onToggleContinuousLoop = {},
                     onCountdownSec = {},
                     onToggleShowMillis = {},

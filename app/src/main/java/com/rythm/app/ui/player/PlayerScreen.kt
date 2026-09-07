@@ -47,8 +47,9 @@ import kotlinx.coroutines.delay
  * - 视频输出：SurfaceView → ViewModel 代理绑定 ExoPlayer（UI 层不接触 media3，包边界）；
  * - 时间外推：Choreographer 每帧 `extrapolatedDisplayPositionMs`（AC-02.3），仅时间/进度组件消费；
  * - 方向适配：rotation 90/270 → portrait，其余 landscape（FR-02.9），configChanges 不重建；
- * - 生命周期：ON_STOP → 保存历史 + 退倒计时（FR-07）；返回 = 退出（历史由 ON_STOP 挂钩保存）；
- * - 练习模式：播放/倒计时中 startLockTask 屏蔽系统导航（边缘滑退、导航键、上滑任务管理），暂停/退出解锁。
+ * - 生命周期：ON_STOP → 保存历史 + 退倒计时（FR-07）；返回 = 退出（历史由 ON_STOP 挂钩保存）。
+ * - 练习模式：沉浸隐藏系统栏 + 返回键分派（倒计时=取消、练习中=退出沉浸、控制态=退出页），
+ *   不使用 LockTask（避免固定屏幕弹窗/退出后锁屏副作用）；系统手势无法在应用层完全屏蔽。
  */
 @Composable
 fun PlayerScreen(
@@ -108,20 +109,15 @@ fun PlayerScreen(
     // ON_STOP：保存归一化历史 + 退倒计时（FR-07，详细设计 4.4）
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { playerViewModel.onStop() }
 
-    // 练习模式任务锁定（屏蔽导航手势/导航键/上滑任务管理）：播放中或倒计时中锁定，暂停即解锁
-    val inPractice = state.isPlaying || state.isCountdown
-    LaunchedEffect(inPractice) {
-        val activity = context as? android.app.Activity ?: return@LaunchedEffect
-        if (inPractice) activity.startLockTask() else activity.stopLockTask()
+    // 返回键分派（兼拦截边缘滑动返回手势）：倒计时 = 取消，练习播放 = 退出沉浸（暂停而非退应用），
+    // 其余（控制态/错误） = 退出播放页
+    BackHandler {
+        when {
+            state.isCountdown -> playerViewModel.cancelCountdown()
+            state.immersive -> playerViewModel.exitImmersive()
+            else -> onExit()
+        }
     }
-
-    // 退出前解锁任务（防锁任务残留至 Activity 重建/销毁）
-    val exitPractice: () -> Unit = {
-        (context as? android.app.Activity)?.stopLockTask()
-        onExit()
-    }
-
-    BackHandler { exitPractice() }
 
     Box(
         modifier = Modifier
@@ -129,7 +125,11 @@ fun PlayerScreen(
             .background(Color.Black),
     ) {
         // 视频输出（居中 FIT：ExoPlayer 端 SCALE_TO_FIT 已配，FR-02.9）
-        VideoSurface(playerViewModel, Modifier.fillMaxSize())
+        VideoSurface(
+            playerViewModel = playerViewModel,
+            readySignal = state.videoUri,
+            modifier = Modifier.fillMaxSize(),
+        )
 
         when {
             state.phase == PlayerPhase.LOADING -> LoadingLayer()
@@ -144,9 +144,11 @@ fun PlayerScreen(
             )
             state.phase == PlayerPhase.ERROR -> ErrorLayer(
                 message = state.error?.message ?: "播放失败",
-                onExit = exitPractice,
+                onExit = onExit,
             )
-            state.controlVisible -> PlayerControlsPanel(
+            // 其余（READY / BUFFERING / ENDED / IDLE）一律显示控制面板：
+            // 暂停态拖动进度条触发缓冲（BUFFERING）时面板不能消失，否则手势节点被移除导致拖动中断
+            else -> PlayerControlsPanel(
                 state = state,
                 nowMs = nowMs,
                 displayName = displayName,
@@ -163,13 +165,15 @@ fun PlayerScreen(
                 onClearSelection = { playerViewModel.clearSelection() },
                 onNudgeA = { playerViewModel.nudgeLoopA(it) },
                 onNudgeB = { playerViewModel.nudgeLoopB(it) },
+                onNudgeDragA = { playerViewModel.nudgeLoopADrag(it) },
+                onNudgeDragB = { playerViewModel.nudgeLoopBDrag(it) },
                 onToggleContinuousLoop = { playerViewModel.toggleContinuousLoop() },
                 onCountdownSec = { playerViewModel.setCountdownSec(it) },
                 onToggleShowMillis = { playerViewModel.toggleShowMillis() },
                 onAudioOffset = { playerViewModel.setAudioOffsetMs(it) },
                 onAddMark = { text -> playerViewModel.addFrameMark(text) },
                 onOpenBookmarks = { showBookmarks = true },
-                onExit = exitPractice,
+                onExit = onExit,
             )
         }
 
@@ -189,21 +193,35 @@ fun PlayerScreen(
     }
 }
 
-/** SurfaceView → ViewModel.attachVideoSurface（media3 边界在 player 层，UI 只传 Surface）。 */
+/**
+ * SurfaceView → ViewModel.attachVideoSurface（media3 边界在 player 层，UI 只传 Surface）。
+ * 双保险重绑：以「surface + 引擎就绪信号（videoUri）」为 key 的 LaunchedEffect 重发绑定——
+ * 首帧 surfaceCreated 若早于引擎创建，attach 为 no-op，引擎就绪后 videoUri 变化再次补绑，
+ * 消除"首次进入画面全黑"的绑定竞态；surfaceDestroyed 显式解绑防泄漏。
+ */
 @Composable
-private fun VideoSurface(playerViewModel: PlayerViewModel, modifier: Modifier = Modifier) {
+private fun VideoSurface(
+    playerViewModel: PlayerViewModel,
+    readySignal: String?,
+    modifier: Modifier = Modifier,
+) {
+    var surface by remember { mutableStateOf<android.view.Surface?>(null) }
+    LaunchedEffect(surface, readySignal) {
+        if (surface != null) playerViewModel.attachVideoSurface(surface)
+    }
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
             SurfaceView(ctx).apply {
                 holder.addCallback(object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) {
-                        playerViewModel.attachVideoSurface(holder.surface)
+                        surface = holder.surface
                     }
 
                     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
 
                     override fun surfaceDestroyed(holder: SurfaceHolder) {
+                        surface = null
                         playerViewModel.attachVideoSurface(null)
                     }
                 })
