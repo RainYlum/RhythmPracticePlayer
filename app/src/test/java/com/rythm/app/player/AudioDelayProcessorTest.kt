@@ -67,10 +67,10 @@ class AudioDelayProcessorTest {
     }
 
     @Test
-    fun `超上限 clamp 到 100ms`() {
+    fun `超上限 clamp 到 200ms`() {
         val p = AudioDelayProcessor()
-        p.setDelayMs(500) // > MAX_DELAY_MS=100
-        assertEquals(100, p.getDelayMs())
+        p.setDelayMs(500) // > MAX_DELAY_MS=200
+        assertEquals(200, p.getDelayMs())
         p.configure(format)
         assertTrue(p.isActive)
     }

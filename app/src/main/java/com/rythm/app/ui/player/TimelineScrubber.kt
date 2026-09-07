@@ -2,7 +2,6 @@ package com.rythm.app.ui.player
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -34,10 +33,11 @@ enum class AbDragTarget { A, B }
 
 /**
  * 时间轴（宽长条版，详细设计 3.4.3）：宽条轨道上绘制进度 + 缓冲 + AB 区间透明遮罩
- * + A/B 端点手柄（拖动实时微调，FR-04.8）+ 帧标记刻度点；进度拖动 → scrubTo（VM 内 80ms 节流）、
- * 松手 → commitScrub；点击区间色带 → 跳 A；点击 A/B 手柄本身不触发任何跳转。
+ * + A/B 端点手柄（拖动实时微调，FR-04.8）+ 帧标记刻度点。
+ * 调整方式：仅支持拖动进度游标（末端）→ scrubTo（VM 内 80ms 节流）、松手 → commitScrub；
+ * 拖动 A/B 端点 → 实时微调；按下轨道其它位置不响应、单击不跳转（防误触）。
  *
- * 手势协程 key 仅 durationMs：A/B 值拖动中实时变化，若作为 key 会重启协程打断手势，
+ * 手势协程 key 仅 durationMs：A/B 值与进度值拖动中实时变化，若作为 key 会重启协程打断手势，
  * 故经 rememberUpdatedState 在回调内读最新值。
  */
 @Composable
@@ -50,7 +50,6 @@ fun TimelineScrubber(
     marks: List<FrameMark>,
     onScrub: (Long) -> Unit,
     onCommit: (Long) -> Unit,
-    onTapLoopBand: () -> Unit,
     onNudgeA: (Long) -> Unit,
     onNudgeB: (Long) -> Unit,
     onAbDragStarted: (AbDragTarget?) -> Unit,
@@ -68,11 +67,11 @@ fun TimelineScrubber(
     var lastDragX by remember { mutableFloatStateOf(0f) }
 
     // 手势协程 key 仅 durationMs，须经 State 读最新参值（不用 by 解包，协程内 .value 实时）
+    val latestPositionMs = rememberUpdatedState(positionMs)
     val latestLoopStart = rememberUpdatedState(loopStartMs)
     val latestLoopEnd = rememberUpdatedState(loopEndMs)
     val latestOnScrub = rememberUpdatedState(onScrub)
     val latestOnCommit = rememberUpdatedState(onCommit)
-    val latestOnTapLoopBand = rememberUpdatedState(onTapLoopBand)
     val latestOnNudgeA = rememberUpdatedState(onNudgeA)
     val latestOnNudgeB = rememberUpdatedState(onNudgeB)
     val latestOnAbDragStarted = rememberUpdatedState(onAbDragStarted)
@@ -99,10 +98,18 @@ fun TimelineScrubber(
                     val b = latestLoopEnd.value
                     b != null && abs(x - xOfMs(b)) <= hitRadiusPx
                 }
+                // 进度游标命中：仅拖动末端游标调整进度（FR-04.7，轨道其它位置按下不响应）
+                val hitThumb: (Float) -> Boolean = { x ->
+                    abs(x - xOfMs(latestPositionMs.value)) <= hitRadiusPx
+                }
+
+                // 当前手势是否处于进度拖动（false = 按下位未命中游标/端点，吞掉手势不调整）
+                var thumbDragging = false
 
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
                         lastDragX = offset.x
+                        thumbDragging = false
                         when {
                             hitA(offset.x) -> {
                                 abDragTarget = AbDragTarget.A
@@ -112,57 +119,40 @@ fun TimelineScrubber(
                                 abDragTarget = AbDragTarget.B
                                 latestOnAbDragStarted.value(AbDragTarget.B)
                             }
-                            else -> {
+                            hitThumb(offset.x) -> {
+                                thumbDragging = true
                                 dragging = true
                                 dragTargetMs = toMs(offset.x)
                                 latestOnScrub.value(dragTargetMs)
                                 latestOnAbDragStarted.value(null)
                             }
+                            else -> latestOnAbDragStarted.value(null)
                         }
                     },
                     onHorizontalDrag = { change, _ ->
                         change.consume()
                         val deltaMs = ((change.position.x - lastDragX) / size.width * durationMs).toLong()
                         lastDragX = change.position.x
-                        when (abDragTarget) {
-                            AbDragTarget.A -> latestOnNudgeA.value(deltaMs)
-                            AbDragTarget.B -> latestOnNudgeB.value(deltaMs)
-                            null -> {
+                        when {
+                            abDragTarget == AbDragTarget.A -> latestOnNudgeA.value(deltaMs)
+                            abDragTarget == AbDragTarget.B -> latestOnNudgeB.value(deltaMs)
+                            thumbDragging -> {
                                 dragTargetMs = toMs(change.position.x)
                                 latestOnScrub.value(dragTargetMs)
                             }
+                            // 按下位未命中：仅消费事件，不做任何调整
                         }
                     },
                     onDragEnd = {
-                        if (abDragTarget == null) latestOnCommit.value(dragTargetMs)
+                        if (thumbDragging) latestOnCommit.value(dragTargetMs)
                         dragging = false
                         abDragTarget = null
+                        thumbDragging = false
                     },
                     onDragCancel = {
                         dragging = false
                         abDragTarget = null
-                    },
-                )
-            }
-            .pointerInput(durationMs) {
-                val toMs: (Float) -> Long = { x ->
-                    if (size.width <= 0f) 0L
-                    else (x / size.width * durationMs).toLong().coerceIn(0L, durationMs)
-                }
-                val xOfMs: (Long) -> Float = { ms ->
-                    if (durationMs <= 0L) 0f else ms.toFloat() / durationMs * size.width
-                }
-                detectTapGestures(
-                    onTap = { offset ->
-                        val a = latestLoopStart.value
-                        val b = latestLoopEnd.value
-                        val onHandle = (a != null && abs(offset.x - xOfMs(a)) <= hitRadiusPx) ||
-                            (b != null && abs(offset.x - xOfMs(b)) <= hitRadiusPx)
-                        if (!onHandle) {
-                            latestOnAbDragStarted.value(null)
-                            val inBand = a != null && b != null && toMs(offset.x) in a..b
-                            if (inBand) latestOnTapLoopBand.value() else latestOnCommit.value(toMs(offset.x))
-                        }
+                        thumbDragging = false
                     },
                 )
             },

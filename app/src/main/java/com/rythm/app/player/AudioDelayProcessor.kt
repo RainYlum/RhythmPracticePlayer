@@ -12,9 +12,9 @@ import java.nio.ByteBuffer
  *
  * 延迟语义：队列容量 = delayMs×采样率×帧字节。填充期（队列未满）只入队不输出；
  * 填满后每出队 n 字节同时入队 n 字节，窗口大小恒定。队列尾随 drain 阶段丢尾可接受
- * （≤100ms，静音尾，官方 DelayAudioProcessor 同策略）。
+ * （≤200ms，静音尾，官方 DelayAudioProcessor 同策略）。
  *
- * 调整即时生效：动态 setDelayMs 重建队列；播放中调整产生 ≤100ms 音频停顿（预期行为）。
+ * 调整即时生效：动态 setDelayMs 重建队列；播放中调整产生 ≤200ms 音频停顿（预期行为）。
  */
 class AudioDelayProcessor : BaseAudioProcessor() {
 
@@ -141,28 +141,37 @@ class AudioDelayProcessor : BaseAudioProcessor() {
     }
 
     companion object {
-        const val MAX_DELAY_MS = 100
+        const val MAX_DELAY_MS = 200
     }
 }
 
 /**
- * 音频延迟应用策略（FR-08 / R-13）：
- * - 正值 +0~+100ms（音频延后）→ 环形缓冲生效，随配置即时重建；
- * - 负值 −1~−100ms（音频提前=视频延后）→ 首版降级：仅记录、返回 0 生效值，
- *   UI 提示"仅支持正值"（R-13 允许的降级路径，不影响播放）。
+ * 音频延迟应用策略（FR-08）：±200ms、5ms 步进（UI 层换算）。
+ * - 正值 +0~+200ms（音频延后）→ 环形缓冲生效，随配置即时重建；
+ * - 负值 −1~−200ms（音频提前=视频延后）→ 路由到视频渲染层等量延迟（VideoDelayRenderer）；
+ * 返回值 = 钳制后的设定值（UI 显示与引擎一致，负值不再降级为 0）。
  */
-class AudioDelayController(private val processor: AudioDelayProcessor) {
+class AudioDelayController(
+    private val processor: AudioDelayProcessor,
+    private val videoDelaySink: (Long) -> Unit,
+) {
 
     var lastEffectiveMs: Int = 0
         private set
 
-    /** @return 实际生效值（负值输入返回 0）。 */
+    /** @return 钳制后的设定值（正负均生效，负值生效于视频渲染层）。 */
     fun apply(offsetMs: Int): Int {
-        val effective = offsetMs.coerceIn(0, AudioDelayProcessor.MAX_DELAY_MS)
-        if (effective != lastEffectiveMs) {
-            processor.setDelayMs(effective)
-            lastEffectiveMs = effective
+        val clamped = offsetMs.coerceIn(-AudioDelayProcessor.MAX_DELAY_MS, AudioDelayProcessor.MAX_DELAY_MS)
+        if (clamped != lastEffectiveMs) {
+            lastEffectiveMs = clamped
+            if (clamped >= 0) {
+                processor.setDelayMs(clamped)
+                videoDelaySink(0L)
+            } else {
+                processor.setDelayMs(0)
+                videoDelaySink(-clamped * 1000L)
+            }
         }
-        return effective
+        return clamped
     }
 }

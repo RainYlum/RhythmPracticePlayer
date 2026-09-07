@@ -13,8 +13,8 @@ import org.junit.Test
 
 /**
  * 沉浸层 Compose 冒烟（阶段 6，I3/FR-02.6/02.7）：仅退出按钮 + 字幕，
- * 无任何控制组件；单击不退出（轻提示），300ms 窗口内双击退出（双击窗口由
- * System.currentTimeMillis 判定，测试内两次 performClick 真实间隔在毫秒级）。
+ * 无任何控制组件；两次手势退出的窗口判定由 PlayerScreen 提升持有（首次仅提示
+ * 「再点一次退出」，窗口内第二次才退出），本层只负责提示文案渲染与手势回调。
  */
 class ImmersiveLayerSmokeTest {
 
@@ -27,7 +27,8 @@ class ImmersiveLayerSmokeTest {
             ImmersiveLayer(
                 captions = listOf("重音", "副歌"),
                 buffering = false,
-                onExitImmersive = {},
+                showExitHint = false,
+                onExitGesture = {},
             )
         }
 
@@ -41,25 +42,32 @@ class ImmersiveLayerSmokeTest {
         rule.onNodeWithText("倒计时").assertDoesNotExist()
         rule.onNodeWithText("毫秒").assertDoesNotExist()
         rule.onAllNodes(sliderSemantics).assertCountEquals(0)
+        // 首次手势提示未触发时不渲染
+        rule.onNodeWithText("再点一次退出").assertDoesNotExist()
     }
 
     @Test
-    fun 单击退出按钮不退出_双击退出() {
-        var exits = 0
+    fun 首次手势仅提示_不退出_窗口内第二次手势才退出() {
+        var gestures = 0
         rule.setContent {
             ImmersiveLayer(
                 captions = emptyList(),
                 buffering = false,
-                onExitImmersive = { exits++ },
+                showExitHint = true,
+                onExitGesture = { gestures++ },
             )
         }
 
-        val exit = rule.onNodeWithContentDescription("退出沉浸")
-        exit.performClick() // 第一击：仅提示，不退出（FR-02.7）
-        assertEquals(0, exits)
+        // 提示（两次手势窗口内第一次）渲染「再点一次退出」
+        rule.onNodeWithText("再点一次退出").assertIsDisplayed()
 
-        exit.performClick() // 300ms 窗口内第二击（真实间隔毫秒级）
+        // 退出按钮点击 = 手势回调；单独点击不退出（窗口判定在 PlayerScreen 层）
+        val exit = rule.onNodeWithContentDescription("退出沉浸")
+        exit.performClick()
         rule.waitForIdle()
-        assertEquals(1, exits)
+        assertEquals(1, gestures)
+        exit.performClick()
+        rule.waitForIdle()
+        assertEquals(2, gestures)
     }
 }

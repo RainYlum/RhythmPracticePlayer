@@ -21,6 +21,7 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.metadata.MetadataOutput
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.text.TextOutput
+import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import com.rythm.app.model.PlaybackSpeed
 import com.rythm.app.model.PlayerError
@@ -40,6 +41,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 
 /**
@@ -50,7 +52,8 @@ import kotlin.coroutines.resume
  * - SelectionMonitor：单次区间播到 B' 自动 pause + 复位 A'（I2，不重建源）；
  * - LoopMediaSourceBuilder：连续循环整链重建（P1-6），源切换原语 = 暂停→建链→prepare→等 READY→seek 回归一化→恢复状态；
  * - CountdownController：FR-10 路径 A（音频先行 + 静止帧遮罩由 UI 层负责）；
- * - AudioDelayProcessor：FR-08 正值延迟 + Sonic 变速共存；负值降级（R-13）。
+ * - AudioDelayProcessor：FR-08 正值延迟 + Sonic 变速共存；负值（音频提前）由 [VideoDelayRenderer]
+ *   将视频渲染时钟整体平移等量延迟，正负均真实生效（±200ms）。
  *
  * 线程约束：除 [captureFrameAt] 外全部方法须在应用主线程调用（ExoPlayer 约定）。
  */
@@ -68,7 +71,9 @@ class VideoPlayerManagerImpl(
 
     // ==== 内部组件 ====
     private val delayProcessor = AudioDelayProcessor()
-    private val delayController = AudioDelayController(delayProcessor)
+    /** 视频渲染延迟（负音频延迟 = 视频延后等量，渲染线程读取，主线程写入 → 原子量）。 */
+    private val videoFrameDelayUs = AtomicLong(0L)
+    private val delayController = AudioDelayController(delayProcessor) { us -> videoFrameDelayUs.set(us) }
     private val sourceBuilder: LoopMediaSourceBuilder by lazy {
         LoopMediaSourceBuilder(DefaultMediaSourceFactory(context))
     }
@@ -114,7 +119,7 @@ class VideoPlayerManagerImpl(
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.CONTENT_TYPE_MOVIE)
             .build()
-        return ExoPlayer.Builder(context, AudioDelayRenderersFactory(context, delayProcessor))
+        return ExoPlayer.Builder(context, AudioDelayRenderersFactory(context, delayProcessor) { videoFrameDelayUs.get() })
             .setAudioAttributes(attributes, /* handleAudioFocus= */ false)
             .setSeekParameters(SeekParameters.DEFAULT)
             .build()
@@ -494,11 +499,12 @@ class VideoPlayerManagerImpl(
 /**
  * 渲染器工厂：默认工厂（硬解失败降软解）基础上，把音频渲染器替换为挂载
  * [AudioDelayProcessor] 的 DefaultAudioSink 实例（setAudioProcessors 追加进内建链，
- * 与 Sonic 变速处理器共存，R-13）。
+ * 与 Sonic 变速处理器共存，R-13）；视频渲染器替换为 [VideoDelayRenderer]（FR-08 负值落地）。
  */
 private class AudioDelayRenderersFactory(
     private val appContext: Context,
     private val delayProcessor: AudioDelayProcessor,
+    private val videoDelayProvider: () -> Long,
 ) : RenderersFactory {
 
     private val base = DefaultRenderersFactory(appContext)
@@ -519,8 +525,8 @@ private class AudioDelayRenderersFactory(
             metadataOutput,
         )
         .map { renderer: Renderer ->
-            if (renderer is MediaCodecAudioRenderer) {
-                MediaCodecAudioRenderer(
+            when (renderer) {
+                is MediaCodecAudioRenderer -> MediaCodecAudioRenderer(
                     appContext,
                     MediaCodecSelector.DEFAULT,
                     /* enableDecoderFallback= */ true,
@@ -530,9 +536,53 @@ private class AudioDelayRenderersFactory(
                         .setAudioProcessors(arrayOf(delayProcessor))
                         .build(),
                 )
-            } else {
-                renderer
+                is MediaCodecVideoRenderer -> VideoDelayRenderer(
+                    context = appContext,
+                    mediaCodecSelector = MediaCodecSelector.DEFAULT,
+                    allowedJoiningTimeMs = DEFAULT_ALLOWED_JOINING_TIME_MS,
+                    enableDecoderFallback = true,
+                    eventHandler = eventHandler,
+                    eventListener = videoRendererEventListener,
+                    maxDroppedFramesToNotify = DEFAULT_MAX_DROPPED_FRAMES_TO_NOTIFY,
+                    frameDelayUs = videoDelayProvider,
+                )
+                else -> renderer
             }
         }
         .toTypedArray()
+
+    companion object {
+        /** 与 DefaultRenderersFactory 默认一致（MediaCodecVideoRenderer 构造参数）。 */
+        private const val DEFAULT_ALLOWED_JOINING_TIME_MS = 5_000L
+        private const val DEFAULT_MAX_DROPPED_FRAMES_TO_NOTIFY = 10
+    }
+}
+
+/**
+ * 视频延迟渲染器（FR-08 负值实现）：把渲染时钟整体前移 [frameDelayUs]，
+ * 帧呈现时刻随之推迟等量（等效音频提前），与 AudioDelayProcessor 正值互补。
+ * 覆盖 render 的 positionUs：渲染器认为播放位置比实际早 delayUs，等待/丢弃判定整体平移，
+ * 画面恒比音频晚 delayUs；0 = 直通（默认）。渲染线程读取，callback 可跨线程。
+ */
+private class VideoDelayRenderer(
+    context: Context,
+    mediaCodecSelector: MediaCodecSelector,
+    allowedJoiningTimeMs: Long,
+    enableDecoderFallback: Boolean,
+    eventHandler: Handler,
+    eventListener: VideoRendererEventListener,
+    maxDroppedFramesToNotify: Int,
+    private val frameDelayUs: () -> Long,
+) : MediaCodecVideoRenderer(
+    context,
+    mediaCodecSelector,
+    allowedJoiningTimeMs,
+    enableDecoderFallback,
+    eventHandler,
+    eventListener,
+    maxDroppedFramesToNotify,
+) {
+    override fun render(positionUs: Long, elapsedRealtimeUs: Long) {
+        super.render(positionUs - frameDelayUs(), elapsedRealtimeUs)
+    }
 }

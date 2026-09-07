@@ -14,6 +14,7 @@ import com.rythm.app.data.repository.VideoLibraryRepositoryImpl
 import com.rythm.app.data.repository.VideoRepository
 import com.rythm.app.data.repository.VideoRepositoryImpl
 import com.rythm.app.data.store.ThumbnailStore
+import com.rythm.app.player.FrameGrabber
 import com.rythm.app.player.VideoPlayerManager
 import com.rythm.app.player.VideoPlayerManagerImpl
 
@@ -47,6 +48,9 @@ class AppContainer(private val app: Application) {
     val thumbStore: ThumbnailStore by lazy { ThumbnailStore(app) }
 
     val videoRepository: VideoRepository by lazy { VideoRepositoryImpl(app) }
+
+    /** 帧抓取（播放页帧标记 + 视频库列表缩略图，无状态可共享）。 */
+    val frameGrabber: FrameGrabber by lazy { FrameGrabber(app) }
 
     val preferenceRepository: PreferenceRepository by lazy {
         PreferenceRepositoryImpl(dataStore)

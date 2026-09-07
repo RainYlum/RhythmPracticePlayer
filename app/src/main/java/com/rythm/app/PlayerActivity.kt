@@ -30,7 +30,6 @@ class PlayerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val uriString = intent.getStringExtra(EXTRA_URI)
-        val displayName = intent.getStringExtra(EXTRA_NAME) ?: "视频"
         if (uriString == null) {
             finish()
             return
@@ -41,7 +40,6 @@ class PlayerActivity : ComponentActivity() {
             RhythmPracticePlayerTheme(darkTheme = true) {
                 PlayerScreen(
                     uri = uriString,
-                    displayName = displayName,
                     playerViewModel = playerViewModel,
                     bookmarkViewModel = bookmarkViewModel,
                     onExit = { finish() },
@@ -52,13 +50,11 @@ class PlayerActivity : ComponentActivity() {
 
     companion object {
         private const val EXTRA_URI = "uri"
-        private const val EXTRA_NAME = "name"
 
-        fun start(context: Context, uri: String, displayName: String) {
+        fun start(context: Context, uri: String) {
             context.startActivity(
                 Intent(context, PlayerActivity::class.java)
-                    .putExtra(EXTRA_URI, uri)
-                    .putExtra(EXTRA_NAME, displayName),
+                    .putExtra(EXTRA_URI, uri),
             )
         }
     }

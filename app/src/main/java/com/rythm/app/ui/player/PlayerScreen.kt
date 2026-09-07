@@ -47,14 +47,15 @@ import kotlinx.coroutines.delay
  * - 视频输出：SurfaceView → ViewModel 代理绑定 ExoPlayer（UI 层不接触 media3，包边界）；
  * - 时间外推：Choreographer 每帧 `extrapolatedDisplayPositionMs`（AC-02.3），仅时间/进度组件消费；
  * - 方向适配：rotation 90/270 → portrait，其余 landscape（FR-02.9），configChanges 不重建；
- * - 生命周期：ON_STOP → 保存历史 + 退倒计时（FR-07）；返回 = 退出（历史由 ON_STOP 挂钩保存）。
- * - 练习模式：沉浸隐藏系统栏 + 返回键分派（倒计时=取消、练习中=退出沉浸、控制态=退出页），
+ * 生命周期：ON_STOP → 保存历史 + 退倒计时（FR-07）；返回 = 弹确认后退出（历史由 ON_STOP 挂钩保存）。
+ * - 练习模式：沉浸隐藏系统栏 + 返回键分派（倒计时=取消、练习中=两次手势退出沉浸、控制态=退出页），
+ *   侧滑返回/左上角按钮/点击屏幕共享同一两次手势窗口（与双击语义一致，防误触）；
+ *   退出练习（控制态返回/错误层返回）先弹确认对话框，确认后才退至视频库。
  *   不使用 LockTask（避免固定屏幕弹窗/退出后锁屏副作用）；系统手势无法在应用层完全屏蔽。
  */
 @Composable
 fun PlayerScreen(
     uri: String,
-    displayName: String,
     playerViewModel: PlayerViewModel,
     bookmarkViewModel: BookmarkViewModel,
     onExit: () -> Unit,
@@ -66,6 +67,36 @@ fun PlayerScreen(
     val context = LocalContext.current
     val view = LocalView.current
     var showBookmarks by remember { mutableStateOf(false) }
+    // 退出确认（FR：结束练习退出至视频库前弹窗确认，防误触退出）
+    var showExitConfirm by remember { mutableStateOf(false) }
+    // 控制面板功能区展开（本次练习内展开后不收起；Activity 销毁重建即重置）
+    var panelExpanded by remember { mutableStateOf(false) }
+    // 沉浸两次手势退出：首次手势（点屏幕/左上角/侧滑返回）仅提示，窗口内第二次才退出
+    var exitHintVisible by remember { mutableStateOf(false) }
+    var lastExitGestureAt by remember { mutableLongStateOf(0L) }
+
+    fun onImmersiveExitGesture() {
+        val now = System.currentTimeMillis()
+        if (now - lastExitGestureAt <= EXIT_GESTURE_WINDOW_MS) {
+            lastExitGestureAt = 0L
+            exitHintVisible = false
+            playerViewModel.exitImmersive()
+        } else {
+            lastExitGestureAt = now
+            exitHintVisible = true
+        }
+    }
+
+    // 退出前确认（仅弹窗，确认后由 onExit 真正退出；历史保存由 ON_STOP 挂钩完成）
+    fun requestExit() { showExitConfirm = true }
+
+    // 提示展示窗口：与手势判定窗口同长，到时自动收起（超时后需重新累计两次手势）
+    LaunchedEffect(exitHintVisible) {
+        if (exitHintVisible) {
+            delay(EXIT_GESTURE_WINDOW_MS)
+            exitHintVisible = false
+        }
+    }
 
     // 每帧外推时钟（AC-02.3）：Choreographer 驱动，仅时间文本/进度消费（详细设计 §7）
     var nowMs by remember { mutableLongStateOf(0L) }
@@ -109,13 +140,13 @@ fun PlayerScreen(
     // ON_STOP：保存归一化历史 + 退倒计时（FR-07，详细设计 4.4）
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { playerViewModel.onStop() }
 
-    // 返回键分派（兼拦截边缘滑动返回手势）：倒计时 = 取消，练习播放 = 退出沉浸（暂停而非退应用），
-    // 其余（控制态/错误） = 退出播放页
+    // 返回键分派（兼拦截边缘滑动返回手势）：倒计时 = 取消，练习播放 = 两次手势退出沉浸（暂停而非退应用），
+    // 其余（控制态/错误） = 弹确认后退出播放页
     BackHandler {
         when {
             state.isCountdown -> playerViewModel.cancelCountdown()
-            state.immersive -> playerViewModel.exitImmersive()
-            else -> onExit()
+            state.immersive -> onImmersiveExitGesture()
+            else -> requestExit()
         }
     }
 
@@ -140,24 +171,25 @@ fun PlayerScreen(
             state.immersive -> ImmersiveLayer(
                 captions = captions,
                 buffering = state.phase == PlayerPhase.BUFFERING,
-                onExitImmersive = { playerViewModel.exitImmersive() },
+                showExitHint = exitHintVisible,
+                onExitGesture = ::onImmersiveExitGesture,
             )
             state.phase == PlayerPhase.ERROR -> ErrorLayer(
                 message = state.error?.message ?: "播放失败",
-                onExit = onExit,
+                onExit = { requestExit() },
             )
             // 其余（READY / BUFFERING / ENDED / IDLE）一律显示控制面板：
             // 暂停态拖动进度条触发缓冲（BUFFERING）时面板不能消失，否则手势节点被移除导致拖动中断
             else -> PlayerControlsPanel(
                 state = state,
                 nowMs = nowMs,
-                displayName = displayName,
                 marks = marks,
+                panelExpanded = panelExpanded,
+                onExpandMore = { panelExpanded = true },
                 onPlay = { playerViewModel.play() },
                 onPause = { playerViewModel.pause() },
                 onSeek = { playerViewModel.commitScrub(it) },
                 onScrub = { playerViewModel.scrubTo(it) },
-                onTapLoopBand = { state.loopStartMs?.let { playerViewModel.seekTo(it) } },
                 onStepBack = { playerViewModel.stepBack(it) },
                 onStepFwd = { playerViewModel.stepFwd(it) },
                 onSpeed = { playerViewModel.setSpeed(it) },
@@ -169,11 +201,9 @@ fun PlayerScreen(
                 onNudgeDragB = { playerViewModel.nudgeLoopBDrag(it) },
                 onToggleContinuousLoop = { playerViewModel.toggleContinuousLoop() },
                 onCountdownSec = { playerViewModel.setCountdownSec(it) },
-                onToggleShowMillis = { playerViewModel.toggleShowMillis() },
                 onAudioOffset = { playerViewModel.setAudioOffsetMs(it) },
                 onAddMark = { text -> playerViewModel.addFrameMark(text) },
                 onOpenBookmarks = { showBookmarks = true },
-                onExit = onExit,
             )
         }
 
@@ -188,6 +218,26 @@ fun PlayerScreen(
                 onEditText = { id, text -> bookmarkViewModel.updateText(id, text) },
                 onDelete = { id -> bookmarkViewModel.remove(id) },
                 onAdd = { text -> playerViewModel.addFrameMark(text) },
+            )
+        }
+
+        // 退出确认（返回键/错误层返回统一入口）：确认后退出至视频库（ON_STOP 保存历史）
+        if (showExitConfirm) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showExitConfirm = false },
+                title = { androidx.compose.material3.Text("结束练习") },
+                text = { androidx.compose.material3.Text("确定结束本次练习并返回视频库？") },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        showExitConfirm = false
+                        onExit()
+                    }) { androidx.compose.material3.Text("退出") }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { showExitConfirm = false }) {
+                        androidx.compose.material3.Text("取消")
+                    }
+                },
             )
         }
     }
@@ -239,43 +289,24 @@ private fun LoadingLayer() {
 
 /**
  * 沉浸层（I3）：仅 ExitButton + 字幕提示；全屏手势丢弃容器消费点击/滑动（AC-02.6）。
- * ExitButton 以 zIndex 置顶保证可命中。双击 300ms 窗口退出（FR-02.7）。
- * internal 暴露供 androidTest 冒烟（沉浸仅 ExitButton / 双击窗口）。
+ * ExitButton 与屏幕点击、侧滑返回统一走 [onExitGesture]（两次手势窗口由 PlayerScreen 判定，
+ * FR-02.7：首次仅提示「再点一次退出」，窗口内第二次才退出）。
+ * internal 暴露供 androidTest 冒烟（沉浸仅 ExitButton / 提示文案渲染）。
  */
 @Composable
 internal fun ImmersiveLayer(
     captions: List<String>,
     buffering: Boolean,
-    onExitImmersive: () -> Unit,
+    showExitHint: Boolean,
+    onExitGesture: () -> Unit,
 ) {
-    var lastTapAt by remember { mutableLongStateOf(0L) }
-    var showHint by remember { mutableStateOf(false) }
-
-    fun onScreenTap() {
-        val now = System.currentTimeMillis()
-        if (now - lastTapAt <= 300) {
-            lastTapAt = 0L
-            onExitImmersive()
-        } else {
-            lastTapAt = now
-            showHint = true
-        }
-    }
-
-    LaunchedEffect(showHint) {
-        if (showHint) {
-            delay(1_200)
-            showHint = false
-        }
-    }
-
     Box(Modifier.fillMaxSize()) {
-        // 手势丢弃容器：消费一切点击/滑动（含字幕穿透事件），仅过滤双击退出
+        // 手势丢弃容器：消费一切点击/滑动（含字幕穿透事件），仅过滤退出手势
         Box(
             Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
-                    detectTapGestures(onTap = { onScreenTap() })
+                    detectTapGestures(onTap = { onExitGesture() })
                 }
                 .pointerInput(Unit) {
                     // 滑动等其余手势一律消费（AC-02.6：播放中一切交互丢弃）
@@ -295,8 +326,8 @@ internal fun ImmersiveLayer(
                 color = Color.White,
             )
         }
-        // 双击退出浮层提示（轻反馈）：小尺寸置顶，避免遮挡画面中央（练习模式）
-        if (showHint) {
+        // 两次手势退出浮层提示（轻反馈，R-10）：小尺寸置顶，避免遮挡画面中央（练习模式）
+        if (showExitHint) {
             androidx.compose.material3.Surface(
                 modifier = Modifier
                     .align(androidx.compose.ui.Alignment.TopCenter)
@@ -312,9 +343,9 @@ internal fun ImmersiveLayer(
                 )
             }
         }
-        // ExitButton（zIndex 置顶于丢弃容器，保证可命中；双击语义由容器统一判定）
+        // ExitButton（zIndex 置顶于丢弃容器，保证可命中；两次手势语义由容器统一判定）
         androidx.compose.material3.IconButton(
-            onClick = ::onScreenTap,
+            onClick = onExitGesture,
             modifier = Modifier
                 .align(androidx.compose.ui.Alignment.TopStart)
                 .padding(8.dp)
@@ -345,3 +376,6 @@ private fun ErrorLayer(message: String, onExit: () -> Unit) {
         }
     }
 }
+
+/** 沉浸两次手势退出窗口（与提示展示同长）：首次手势只提示，窗口内第二次才退出（FR-02.7 防误触）。 */
+private const val EXIT_GESTURE_WINDOW_MS = 1_200L

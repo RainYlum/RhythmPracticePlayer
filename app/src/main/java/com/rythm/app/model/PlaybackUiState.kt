@@ -26,7 +26,6 @@ data class PlaybackUiState(
     val videoRotationDeg: Int = 0,
     val audioOffsetMs: Int = 0,
     val countdownSec: Int = 3,
-    val showMillis: Boolean = false,
     val error: PlayerError? = null,
     val phase: PlayerPhase = PlayerPhase.IDLE,
     val tickBasePositionMs: Long = 0L,

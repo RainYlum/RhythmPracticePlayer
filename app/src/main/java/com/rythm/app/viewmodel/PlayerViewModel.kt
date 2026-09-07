@@ -121,9 +121,10 @@ class PlayerViewModel(
                 initialPositionMs = positionMs,
                 speed = speed,
                 audioOffsetMs = audioOffsetMs,
-                loopStartMs = history?.loopStartMs,
-                loopEndMs = history?.loopEndMs,
-                continuousLoop = history?.continuousLoop == true,
+                // AB 点/连续循环不持久化：仅单次练习内保留，退出至视频库后需重新设置
+                loopStartMs = null,
+                loopEndMs = null,
+                continuousLoop = false,
             )
             _uiState.update {
                 it.copy(
@@ -132,10 +133,6 @@ class PlayerViewModel(
                     currentPositionMs = positionMs,
                     displayPositionMs = positionMs,
                     audioOffsetMs = audioOffsetMs,
-                    loopStartMs = history?.loopStartMs,
-                    loopEndMs = history?.loopEndMs,
-                    loopEnabled = history?.loopStartMs != null,
-                    continuousLoop = history?.continuousLoop == true,
                 )
             }
             videoLibraryRepository.updateLastOpened(uriString, System.currentTimeMillis())
@@ -364,12 +361,17 @@ class PlayerViewModel(
     }
 
     /**
-     * 一键设置 A/B（快捷设点）：当前帧为 A，延后 [QUICK_LOOP_SPAN_MS]（30s）为 B，
-     * B 超时长则 clamp 到末尾；不满足最短区间时仅报错不改选区。
+     * 一键设置 A/B（快捷设点，开关语义）：未设置 → 当前帧为 A，延后 [QUICK_LOOP_SPAN_MS]（30s）为 B，
+     * B 超时长则 clamp 到末尾，不满足最短区间时仅报错不改选区；已设置 → 关闭选区（切换开关）。
      */
     fun setQuickLoop() {
         val s = _uiState.value
         if (s.phase != PlayerPhase.READY || s.durationMs <= 0L) return
+        // 已设 A（含仅设 A 的 WAIT_B）= 已开启 → 再点关闭
+        if (s.loopStartMs != null) {
+            clearSelection()
+            return
+        }
         val a = s.currentPositionMs.coerceIn(0L, s.durationMs)
         when (val result = loopPolicy.validate(a, (a + QUICK_LOOP_SPAN_MS).coerceAtMost(s.durationMs), s.durationMs)) {
             is LoopValidation.Invalid -> _uiState.update {
@@ -462,7 +464,7 @@ class PlayerViewModel(
         player?.setVideoSurface(surface)
     }
 
-    /** 音频延迟校正（FR-08）：±100ms、5ms 步进；负值由引擎降级返回 0/记录（R-13）。 */
+    /** 音频延迟校正（FR-08）：±200ms、5ms 步进（UI 步进）；正值=音频延后，负值=音频提前（视频延迟）。 */
     fun setAudioOffsetMs(offsetMs: Int) {
         val clamped = offsetMs.coerceIn(-AudioDelayLimitMs, AudioDelayLimitMs)
         val effective = player?.setAudioOffsetMs(clamped) ?: return
@@ -476,11 +478,6 @@ class PlayerViewModel(
         _uiState.update { it.copy(countdownSec = clamped) }
         viewModelScope.launch { preferenceRepository.setCountdownSec(clamped) }
         if (s.isCountdown && clamped == 0) player?.cancelCountdown()
-    }
-
-    /** 毫秒级时间显示开关（FR-02.4）。 */
-    fun toggleShowMillis() {
-        _uiState.update { it.copy(showMillis = !it.showMillis) }
     }
 
     /** 帧标记（FR-06）：当前归一化位置 + 帧画面缩略图（≤320px，R-12）。 */
@@ -514,7 +511,7 @@ class PlayerViewModel(
         saveHistory()
     }
 
-    /** 保存播放历史（归一化位置 + 倍速 + 选区 + 倒计时 + 音频延迟，FR-07）。 */
+    /** 保存播放历史（归一化位置 + 倍速 + 倒计时 + 音频延迟，FR-07）：AB 点/连续循环仅单次练习内有效，不持久化。 */
     fun saveHistory() {
         val p = player ?: return
         val s = _uiState.value
@@ -527,10 +524,10 @@ class PlayerViewModel(
                     uri = uri,
                     positionMs = snap.normalizedPositionMs,
                     speed = snap.speed,
-                    loopStartMs = snap.loopStartMs,
-                    loopEndMs = snap.loopEndMs,
-                    loopEnabled = snap.loopStartMs != null,
-                    continuousLoop = snap.continuousLoop,
+                    loopStartMs = null,
+                    loopEndMs = null,
+                    loopEnabled = false,
+                    continuousLoop = false,
                     countdownSec = s.countdownSec,
                     audioOffsetMs = s.audioOffsetMs,
                     updatedAt = System.currentTimeMillis(),
@@ -566,6 +563,7 @@ class PlayerViewModel(
         /** 倒计时预听时长上限（FR-10.1：0/3/5s）。 */
         const val MaxCountdownSecSec = 5
 
-        private const val AudioDelayLimitMs = 100
+        /** 音频延迟偏移上限（FR-08）：±200ms、5ms 步进。 */
+        const val AudioDelayLimitMs = 200
     }
 }

@@ -30,8 +30,8 @@ class MainActivity : ComponentActivity() {
             RhythmPracticePlayerTheme {
                 VideoLibraryScreen(
                     viewModel = libraryViewModel,
-                    onOpenVideo = { uri, displayName ->
-                        PlayerActivity.start(this, uri, displayName)
+                    onOpenVideo = { uri, _ ->
+                        PlayerActivity.start(this, uri)
                     },
                 )
             }

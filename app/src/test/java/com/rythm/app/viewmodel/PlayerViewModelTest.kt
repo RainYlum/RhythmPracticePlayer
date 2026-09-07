@@ -34,6 +34,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -103,7 +104,7 @@ class PlayerViewModelTest {
     // ==== 装载 / 历史恢复（FR-07，详设 4.4） ====
 
     @Test
-    fun `装载并恢复历史配置`() = runTest {
+    fun `装载并恢复历史配置_但AB点不持久化不恢复`() = runTest {
         prefs.settings.value = AppSettings(defaultSpeed = PlaybackSpeed.S0_5, countdownSec = 0)
         prefs.history = HistoryEntry(
             uri = URI, positionMs = 12_345, speed = PlaybackSpeed.S0_7,
@@ -118,9 +119,10 @@ class PlayerViewModelTest {
         assertEquals(12_345L, load.initialPositionMs)
         assertEquals(PlaybackSpeed.S0_7, load.speed)
         assertEquals(30, load.audioOffsetMs)
-        assertEquals(1_000L, load.loopStartMs)
-        assertEquals(5_000L, load.loopEndMs)
-        assertTrue(load.continuousLoop)
+        // AB 点/连续循环仅单次练习内保留：历史里即使有也不恢复，需重新设置
+        assertNull(load.loopStartMs)
+        assertNull(load.loopEndMs)
+        assertFalse(load.continuousLoop)
         assertEquals(listOf(uri), videoRepo.permissionUris)
         assertEquals(listOf(uri), videoRepo.readabilityChecks)
         assertEquals(listOf(uri), videoRepo.readMetadataUris)
@@ -132,10 +134,10 @@ class PlayerViewModelTest {
         assertEquals(12_345L, s.currentPositionMs)
         assertEquals(12_345L, s.displayPositionMs)
         assertEquals(30, s.audioOffsetMs)
-        assertEquals(1_000L, s.loopStartMs)
-        assertEquals(5_000L, s.loopEndMs)
-        assertTrue(s.loopEnabled)
-        assertTrue(s.continuousLoop)
+        assertNull(s.loopStartMs)
+        assertNull(s.loopEndMs)
+        assertFalse(s.loopEnabled)
+        assertFalse(s.continuousLoop)
         assertEquals(URI, s.videoUri)
     }
 
@@ -629,6 +631,38 @@ class PlayerViewModelTest {
     }
 
     @Test
+    fun `setQuickLoop 开关切换_已设置时再点关闭`() = runTest {
+        vm.loadVideo(uri)
+        advanceUntilIdle()
+        emit(PlayerEvent.StateChanged(PlayerPhase.READY, false))
+        emit(PlayerEvent.PositionTick(5_000, 5_000))
+
+        vm.setQuickLoop() // 未设置 → 打开：A=当前帧，B=A+30s
+        var s = vm.uiState.value
+        assertEquals(5_000L, s.loopStartMs)
+        assertEquals(35_000L, s.loopEndMs)
+        assertTrue(s.loopEnabled)
+        assertEquals(listOf(5_000L to 35_000L), manager.selectionCalls)
+
+        // 播放/暂停往返不丢失 AB（单次练习内保留）
+        emit(PlayerEvent.StateChanged(PlayerPhase.READY, true))
+        emit(PlayerEvent.StateChanged(PlayerPhase.READY, false))
+        assertNotNull(vm.uiState.value.loopStartMs)
+
+        vm.setQuickLoop() // 已设置 → 关闭（切换开关）
+        s = vm.uiState.value
+        assertNull(s.loopStartMs)
+        assertNull(s.loopEndMs)
+        assertFalse(s.loopEnabled)
+        assertEquals(1, manager.clearSelectionCalls)
+
+        vm.setQuickLoop() // 再次打开仍可用（A=当前帧）
+        s = vm.uiState.value
+        assertNotNull(s.loopStartMs)
+        assertTrue(s.loopEnabled)
+    }
+
+    @Test
     fun `clearSelection 与连续循环开关`() = runTest {
         vm.loadVideo(uri)
         advanceUntilIdle()
@@ -663,20 +697,20 @@ class PlayerViewModelTest {
     // ==== 音频延迟（FR-08） ====
 
     @Test
-    fun `setAudioOffsetMs 正负边界与引擎降级回写`() = runTest {
+    fun `setAudioOffsetMs 正负边界钳制回写设定值`() = runTest {
         vm.loadVideo(uri)
         advanceUntilIdle()
 
-        vm.setAudioOffsetMs(500) // 超上限钳 100
-        assertEquals(listOf(100), manager.audioOffsetCalls)
-        assertEquals(100, vm.uiState.value.audioOffsetMs)
+        vm.setAudioOffsetMs(500) // 超上限钳 ±200
+        assertEquals(listOf(200), manager.audioOffsetCalls)
+        assertEquals(200, vm.uiState.value.audioOffsetMs)
 
-        vm.setAudioOffsetMs(-500) // 超下限钳 -100；引擎降级返回 0（R-13）
-        assertEquals(listOf(100, -100), manager.audioOffsetCalls)
-        assertEquals(0, vm.uiState.value.audioOffsetMs)
+        vm.setAudioOffsetMs(-500)
+        assertEquals(listOf(200, -200), manager.audioOffsetCalls)
+        assertEquals(-200, vm.uiState.value.audioOffsetMs) // 负值 = 音频提前（视频延迟），不再降级
 
         vm.setAudioOffsetMs(30)
-        assertEquals(listOf(100, -100, 30), manager.audioOffsetCalls)
+        assertEquals(listOf(200, -200, 30), manager.audioOffsetCalls)
         assertEquals(30, vm.uiState.value.audioOffsetMs)
     }
 
@@ -748,7 +782,7 @@ class PlayerViewModelTest {
     // ==== 生命周期（FR-07） ====
 
     @Test
-    fun `onStop 保存引擎归一化历史并退出倒计时`() = runTest {
+    fun `onStop 保存引擎归一化历史且AB点不持久化`() = runTest {
         vm.loadVideo(uri)
         advanceUntilIdle()
         emit(PlayerEvent.StateChanged(PlayerPhase.READY, false))
@@ -756,7 +790,13 @@ class PlayerViewModelTest {
         vm.setSpeed(PlaybackSpeed.S0_8)
         vm.setCountdownSec(5)
         vm.setAudioOffsetMs(25)
-        manager.snapshotValue = manager.snapshotValue.copy(normalizedPositionMs = 12_345, speed = PlaybackSpeed.S0_8)
+        manager.snapshotValue = manager.snapshotValue.copy(
+            normalizedPositionMs = 12_345,
+            speed = PlaybackSpeed.S0_8,
+            loopStartMs = 1_000,
+            loopEndMs = 5_000,
+            continuousLoop = true,
+        )
 
         vm.onStop()
         advanceUntilIdle() // 历史写入为异步（viewModelScope.launch）
@@ -767,8 +807,10 @@ class PlayerViewModelTest {
         assertEquals(PlaybackSpeed.S0_8, h.speed)
         assertEquals(5, h.countdownSec)
         assertEquals(25, h.audioOffsetMs)
+        // AB 点/连续循环仅单次练习有效：引擎快照里有也不写入历史（退出到视频库后需重设）
         assertNull(h.loopStartMs)
         assertNull(h.loopEndMs)
+        assertFalse(h.loopEnabled)
         assertFalse(h.continuousLoop)
     }
 
@@ -883,7 +925,7 @@ class PlayerViewModelTest {
 
         override fun setAudioOffsetMs(offsetMs: Int): Int = run {
             audioOffsetCalls += offsetMs
-            offsetMs.coerceIn(0, 100) // 引擎侧负值降级返回 0（R-13）
+            offsetMs.coerceIn(-200, 200) // 引擎 ±200 钳制：负值 = 视频延迟生效
         }
 
         override fun setVideoSurface(surface: android.view.Surface?) {

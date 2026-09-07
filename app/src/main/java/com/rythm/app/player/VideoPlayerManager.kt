@@ -54,7 +54,7 @@ interface VideoPlayerManager {
     /** 取消倒计时：暂停并回 S（I8 起点语义）。 */
     fun cancelCountdown()
 
-    /** 调整音频延迟（ms）：正值 0~+100 生效（环形缓冲）；负值仅记录（R-13 降级，返回值=实际生效值）。 */
+    /** 调整音频延迟（ms，±200 上限）：正值 0~+200（音频延后）生效于环形缓冲；负值 −1~−200（音频提前）生效于视频渲染延迟；返回值=钳制后的设定值。 */
     fun setAudioOffsetMs(offsetMs: Int): Int
 
     /**

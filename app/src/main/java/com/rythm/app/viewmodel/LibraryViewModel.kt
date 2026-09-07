@@ -5,13 +5,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rythm.app.data.repository.VideoLibraryRepository
 import com.rythm.app.data.repository.VideoRepository
+import com.rythm.app.data.store.ThumbnailStore
 import com.rythm.app.model.LibraryItem
+import com.rythm.app.player.FrameGrabber
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 /** 视频库主页 UI 状态（FR-11，架构 5.2 LibraryViewModel）。 */
 data class LibraryUiState(
@@ -22,13 +25,32 @@ data class LibraryUiState(
 
 /**
  * 视频库主页 ViewModel（FR-11，架构 5.2）：
- * 列表数据源（addedAt 倒序）、导入登记（docId 去重）、备注编辑、删除（级联清理，I6）。
+ * 列表数据源（addedAt 倒序）、导入登记（docId 去重 + 列表缩略图生成）、
+ * 旧库缩略图补全（thumbPath 缺失/文件失效时自动重新生成）、备注编辑、删除（级联清理，I6）。
  * 打开条目后的导航由 UI 层完成（跳播放页）。
  */
 class LibraryViewModel(
     private val libraryRepository: VideoLibraryRepository,
     private val videoRepository: VideoRepository,
+    private val thumbStore: ThumbnailStore,
+    private val frameGrabber: FrameGrabber,
 ) : ViewModel() {
+
+    init {
+        // 旧库兼容（R-12）：列表出现后为缺失/失效缩略图的条目补生成，失败静默等待下次变化重试
+        viewModelScope.launch {
+            libraryRepository.listFlow().collect { items ->
+                items.forEach { item ->
+                    if (item.thumbPath.isNullOrEmpty() || !File(item.thumbPath).exists()) {
+                        val parsed = runCatching { Uri.parse(item.uri) }.getOrNull() ?: return@forEach
+                        ensureThumb(parsed, item.docId)?.let { path ->
+                            runCatching { libraryRepository.updateThumb(item.uri, path) }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     private val _uiState = MutableStateFlow(LibraryUiState(isLoading = true))
 
@@ -47,7 +69,7 @@ class LibraryViewModel(
     }.getOrDefault(false)
 
     /**
-     * 导入登记（FR-01.5/11.5）：SAF 授权持久化 + docId 去重。
+     * 导入登记（FR-01.5/11.5）：SAF 授权持久化 + docId 去重 + 列表缩略图生成。
      * 是否新增为异步结果（DataStore 事务内判断），由列表数据流刷新自然呈现；失败置 uiState.error。
      */
     fun importVideo(uri: Uri, displayName: String) {
@@ -56,6 +78,12 @@ class LibraryViewModel(
         viewModelScope.launch {
             runCatching { libraryRepository.add(uri.toString(), displayName, docId) }
                 .onFailure { _uiState.value = _uiState.value.copy(error = "导入失败：${it.message}") }
+                .onSuccess {
+                    // 列表缩略图（R-12）：取视频前 1/3 时长帧；失败静默降级为占位块，不影响入库
+                    ensureThumb(uri, docId)?.let { path ->
+                        runCatching { libraryRepository.updateThumb(uri.toString(), path) }
+                    }
+                }
         }
     }
 
@@ -72,5 +100,22 @@ class LibraryViewModel(
     /** 打开条目：刷新 lastOpenedAt（供排序/最近打开）。 */
     fun markOpened(uri: String) {
         viewModelScope.launch { libraryRepository.updateLastOpened(uri, System.currentTimeMillis()) }
+    }
+
+    /**
+     * 提取一帧并保存至 thumbnails/<docKey>.jpg（≤640px 宽，R-12），返回绝对路径；失败返回 null。
+     * 取视频前 1/3 时长帧作预览，避开开头黑帧/结尾黑帧。
+     */
+    private suspend fun ensureThumb(uri: Uri, docId: String): String? {
+        val durationMs = runCatching { videoRepository.readMetadata(uri) }.getOrNull()?.durationMs ?: 0L
+        if (durationMs <= 0L) return null
+        val bitmap = frameGrabber.grabFrame(uri, durationMs / 3, LibraryThumbMaxWidthPx) ?: return null
+        val file = thumbStore.newThumbFile(docId)
+        return if (thumbStore.saveJpeg(bitmap, file, LibraryThumbMaxWidthPx)) file.absolutePath else null
+    }
+
+    companion object {
+        /** 视频库列表缩略图宽上限（R-12，ThumbnailStore 默认）。 */
+        private const val LibraryThumbMaxWidthPx = 640
     }
 }
