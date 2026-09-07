@@ -54,7 +54,7 @@ import com.rythm.app.ui.common.formatPlayTime
 
 /**
  * CONTROL 控制面板（详细设计 3.4.2）：完整暂停控制窗。
- * 面板占屏幕下 30%（内容超出时内部滚动），背景 50% 透明露出视频画面；
+ * 面板占屏幕下 50%（内容超出时内部滚动），背景 50% 透明露出视频画面；
  * 默认仅展示时间/进度条与播放控制两行，其它功能（AB 设点/连续循环/倍速/倒计时/音频延迟/帧标记）
  * 由播放控制行右端「更多功能」展开，本次练习内不收起（展开状态由 PlayerScreen 提升持有）；
  * 时间戳默认毫秒精度（mm:ss.mmm）；倍速/倒计时为"总按钮 + 向上弹出菜单"（I4：无滑块组件），
@@ -105,8 +105,9 @@ fun PlayerControlsPanel(
     // DropdownMenu 向上弹出位移：菜单高 = 每项 48dp + 容器上下边距 16dp
     val speedMenuUpOffset = DpOffset(0.dp, -(48.dp * PlaybackSpeed.entries.size + 16.dp))
     val countdownMenuUpOffset = DpOffset(0.dp, -(48.dp * CDN_MENU_ITEMS.size + 16.dp))
-    // 控制面板最大高度（屏幕 30%）+ 50% 透明背景：面板内可见视频画面
-    val panelMaxHeight = LocalConfiguration.current.screenHeightDp.dp * 0.30f
+    // 控制面板最大高度（屏幕 50%，FR：默认三行完整可见；展开后内容超出时内部滚动）
+    // + 50% 透明背景：面板内可见视频画面
+    val panelMaxHeight = LocalConfiguration.current.screenHeightDp.dp * 0.50f
 
     Box(Modifier.fillMaxSize()) {
         Column(
@@ -164,34 +165,37 @@ fun PlayerControlsPanel(
             )
             Spacer(Modifier.height(4.dp))
 
-            // 播放控制行：步进 + 播放（居中）；右端「更多功能」入口（仅折叠态出现）
-            Row(
+            // 播放控制行：步进 + 播放（Box 居中布局，不受右端「更多功能」宽度影响）；
+            // 「更多功能」入口绝对定位右端（仅折叠态出现，展开后消失）
+            Box(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+                contentAlignment = Alignment.Center,
             ) {
-                Spacer(Modifier.weight(1f))
-                StepButton("−1s") { onStepBack(1_000L) }
-                StepButton("−0.1s") { onStepBack(100L) }
-                IconButton(
-                    onClick = { hideNudge(); if (state.isPlaying) onPause() else onPlay() },
-                    modifier = Modifier.size(56.dp),
-                ) {
-                    Icon(
-                        imageVector = if (state.phase == PlayerPhase.ENDED) Icons.Filled.Replay else {
-                            if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow
-                        },
-                        contentDescription = if (state.isPlaying) "暂停" else "播放",
-                        tint = Color.White,
-                        modifier = Modifier.size(40.dp),
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StepButton("−1s") { onStepBack(1_000L) }
+                    StepButton("−0.1s") { onStepBack(100L) }
+                    IconButton(
+                        onClick = { hideNudge(); if (state.isPlaying) onPause() else onPlay() },
+                        modifier = Modifier.size(56.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (state.phase == PlayerPhase.ENDED) Icons.Filled.Replay else {
+                                if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow
+                            },
+                            contentDescription = if (state.isPlaying) "暂停" else "播放",
+                            tint = Color.White,
+                            modifier = Modifier.size(40.dp),
+                        )
+                    }
+                    StepButton("+0.1s") { onStepFwd(100L) }
+                    StepButton("+1s") { onStepFwd(1_000L) }
                 }
-                StepButton("+0.1s") { onStepFwd(100L) }
-                StepButton("+1s") { onStepFwd(1_000L) }
-                Spacer(Modifier.weight(1f))
                 if (!panelExpanded) {
                     TextButton(
                         onClick = onExpandMore,
-                        modifier = Modifier.testTag("moreButton"),
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .testTag("moreButton"),
                     ) {
                         Text("更多功能", color = Color.White, style = MaterialTheme.typography.labelLarge)
                     }
