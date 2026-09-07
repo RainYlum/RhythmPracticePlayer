@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rhythm Practice Player - 节奏练习播放器</title>
+<meta name="description" content="Rhythm Practice Player 1.0：面向舞蹈/节奏训练的 Android 视频练习播放器，支持区间循环、变速、逐帧步进、帧标记与沉浸练习模式。">
+<style>
+  :root {
+    --bg: #0d0f14;
+    --bg-card: #161a22;
+    --bg-card-hover: #1c2230;
+    --accent: #7c5cff;
+    --accent-soft: rgba(124, 92, 255, 0.14);
+    --text: #e8eaf0;
+    --text-dim: #9aa3b5;
+    --border: #262c3a;
+    --ok: #3ddc97;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: radial-gradient(1200px 600px at 80% -10%, #1b1440 0%, var(--bg) 55%) fixed, var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---- 头部 ---- */
+  header { padding: 72px 0 48px; text-align: center; }
+  .logo {
+    width: 84px; height: 84px; margin: 0 auto 20px;
+    border-radius: 22px;
+    background: linear-gradient(145deg, #8a6bff, #5a3ee8);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 12px 40px rgba(124, 92, 255, 0.35);
+  }
+  .logo svg { width: 44px; height: 44px; }
+  h1 { font-size: 40px; font-weight: 800; letter-spacing: 0.5px; }
+  .sub { color: var(--text-dim); font-size: 17px; margin-top: 10px; }
+  .badge {
+    display: inline-block; margin-top: 18px;
+    padding: 5px 14px; border-radius: 999px;
+    background: var(--accent-soft); color: #b9a8ff;
+    font-size: 13px; font-weight: 600; border: 1px solid rgba(124, 92, 255, 0.35);
+  }
+
+  /* ---- 下载区 ---- */
+  .download {
+    text-align: center; margin: 8px 0 56px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 36px 24px;
+  }
+  .btn-download {
+    display: inline-flex; align-items: center; gap: 12px;
+    background: linear-gradient(135deg, #8a6bff, #5a3ee8);
+    color: #fff; text-decoration: none;
+    font-size: 18px; font-weight: 700;
+    padding: 14px 40px; border-radius: 999px;
+    box-shadow: 0 10px 32px rgba(124, 92, 255, 0.4);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .btn-download:hover { transform: translateY(-2px); box-shadow: 0 14px 40px rgba(124, 92, 255, 0.5); }
+  .btn-download .apk-icon { font-size: 22px; }
+  .dl-meta { margin-top: 14px; color: var(--text-dim); font-size: 13.5px; }
+  .dl-meta b { color: var(--text); font-weight: 600; }
+
+  /* ---- 功能 ---- */
+  h2 {
+    font-size: 22px; margin: 40px 0 20px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  h2::before { content: ""; width: 4px; height: 20px; border-radius: 2px; background: var(--accent); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 22px 20px;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  }
+  .card:hover { background: var(--bg-card-hover); border-color: #354056; transform: translateY(-2px); }
+  .card .icon { font-size: 24px; }
+  .card h3 { font-size: 16.5px; margin: 10px 0 6px; }
+  .card p { color: var(--text-dim); font-size: 14px; }
+  .tag { color: #b9a8ff; font-weight: 600; }
+
+  /* ---- 版本/系统要求 ---- */
+  .meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+  .meta-item {
+    flex: 1; min-width: 200px;
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 16px 18px;
+  }
+  .meta-item .k { color: var(--text-dim); font-size: 13px; }
+  .meta-item .v { font-size: 15px; font-weight: 600; margin-top: 2px; }
+  .meta-item .v.ok { color: var(--ok); }
+
+  /* ---- 页脚 ---- */
+  footer { text-align: center; color: var(--text-dim); font-size: 13.5px; padding: 56px 0 40px; }
+  footer .note { color: rgba(154, 163, 181, 0.75); font-size: 12.5px; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2.5" y="6" width="13" height="12" rx="2.5"/>
+      <path d="M15.5 10.5 21 7.5v9l-5.5-3"/>
+    </svg>
+  </div>
+  <h1>Rhythm Practice Player</h1>
+  <div class="sub">面向舞蹈与节奏训练的 Android 视频练习播放器</div>
+  <div class="badge">v1.0.0 · 正式版</div>
+</header>
+
+<section class="wrap">
+  <div class="download">
+    <a class="btn-download" href="app-release.apk" download>
+      <span class="apk-icon">⬇</span> 下载 APK <span style="font-weight:400;font-size:14px">(v1.0.0)</span>
+    </a>
+    <div class="dl-meta">Android 10（API 29）及以上 · 约 <b>52 MB</b> · 安装时请允许「安装未知来源应用」</div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>核心功能</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="icon">🔁</div>
+      <h3>区间循环（AB 点）</h3>
+      <p>一键设置 <span class="tag">A/B 循环区间</span>，可拖动端点或 ±0.1s 微调精确对齐，支持「连续循环」模式反复练习难点段落。</p>
+    </div>
+    <div class="card">
+      <div class="icon">🎯</div>
+      <h3>逐帧级控制</h3>
+      <p>±0.1s / ±1s 双向步进与 <span class="tag">逐帧步进</span>，慢速回放看清每个动作细节；加工位思维：帧→动作→记忆。</p>
+    </div>
+    <div class="card">
+      <div class="icon">⏩</div>
+      <h3>多档变速播放</h3>
+      <p>0.5x – 2.0x <span class="tag">六档倍速</span>，0.25x 超慢速适合初学拆解，练习变速不改变音高。</p>
+    </div>
+    <div class="card">
+      <div class="icon">🎬</div>
+      <h3>帧标记与字幕</h3>
+      <p>在任意时间点添加 <span class="tag">帧标记</span>（附画面缩略图），可写文本提示随播放显示，点击即跳转到对应位置。</p>
+    </div>
+    <div class="card">
+      <div class="icon">🧘</div>
+      <h3>沉浸练习模式</h3>
+      <p>全屏无干扰练习，内置 <span class="tag">3s/5s 倒计时</span> 自动开播；两次手势/滑动防误触退出，专注不被打断。</p>
+    </div>
+    <div class="card">
+      <div class="icon">🎚️</div>
+      <h3>音画同步调节</h3>
+      <p>音频延迟 <span class="tag">±200ms</span> 以 5ms 步进精细校准，解决蓝牙耳机 / 外接音响的音画不同步问题。</p>
+    </div>
+    <div class="card">
+      <div class="icon">📚</div>
+      <h3>本地视频库</h3>
+      <p>导入本地视频自动生成<span class="tag">缩略图预览</span>，支持备注命名、最近打开排序，无需上传、数据完全本地化。</p>
+    </div>
+    <div class="card">
+      <div class="icon">💾</div>
+      <h3>进度自动保存</h3>
+      <p>退出练习自动记录播放位置与倍速设置，下次打开 <span class="tag">无缝续播</span>，随时回到上次停下的地方。</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>版本信息</h2>
+  <div class="meta">
+    <div class="meta-item">
+      <div class="k">当前版本</div>
+      <div class="v">v1.0.0（versionCode 1）</div>
+    </div>
+    <div class="meta-item">
+      <div class="k">系统要求</div>
+      <div class="v">Android 10（API 29）及以上</div>
+    </div>
+    <div class="meta-item">
+      <div class="k">数据与隐私</div>
+      <div class="v ok">全部本地存储 · 无需联网</div>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">
+  <div>Rhythm Practice Player v1.0.0</div>
+  <div class="note">本页为发布页 · APK 与 HTML 文件放在同一目录部署即可；更新版本时替换 app-release.apk 并同步上方版本号</div>
+</footer>
+
+</body>
+</html>

@@ -13,3 +13,5 @@
 .externalNativeBuild
 .cxx
 local.properties
+# 签名密钥与密码（不入库）
+app/sign/
