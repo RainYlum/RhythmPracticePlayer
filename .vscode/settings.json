@@ -1,0 +1,5 @@
+{
+  // Kotlin 语言服务器 JDK（修复 androidx/android 依赖无法解析：
+  // 无 JAVA_HOME 时 KLS 找不到 JDK → Gradle 模型导入失败 → classpath 只有 kotlin-stdlib）
+  "kotlin.java.home": "C:\\Program Files\\Android\\Android Studio\\jbr"
+}
