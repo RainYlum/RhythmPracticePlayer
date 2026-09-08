@@ -479,20 +479,20 @@ class PlayerViewModelTest {
     // ==== 定位 / 步进（FR-05） ====
 
     @Test
-    fun `scrubTo 80ms 节流与 commitScrub 精确`() = runTest {
+    fun `scrubTo 40ms 节流与 commitScrub 精确`() = runTest {
         vm.loadVideo(uri)
         advanceUntilIdle()
         emit(PlayerEvent.StateChanged(PlayerPhase.READY, false))
         nowMs = 1_000_000L
 
-        vm.scrubTo(1_000) // (1000, exact=false)
+        vm.scrubTo(1_000) // (1000, exact=true) 拖动预览精确逐帧
         vm.scrubTo(2_000) // 节流内忽略
         nowMs += 100
         vm.scrubTo(3_000)
         vm.commitScrub(4_000) // 松手精确定位
 
         assertEquals(
-            listOf(1_000L to false, 3_000L to false, 4_000L to true),
+            listOf(1_000L to true, 3_000L to true, 4_000L to true),
             manager.seekCalls,
         )
     }
@@ -631,13 +631,13 @@ class PlayerViewModelTest {
     }
 
     @Test
-    fun `setQuickLoop 开关切换_已设置时再点关闭`() = runTest {
+    fun `setQuickLoop 开关注销_关闭后再次开启恢复上次区间`() = runTest {
         vm.loadVideo(uri)
         advanceUntilIdle()
         emit(PlayerEvent.StateChanged(PlayerPhase.READY, false))
         emit(PlayerEvent.PositionTick(5_000, 5_000))
 
-        vm.setQuickLoop() // 未设置 → 打开：A=当前帧，B=A+30s
+        vm.setQuickLoop() // 未设置 → 默认 A=当前帧，B=A+30s
         var s = vm.uiState.value
         assertEquals(5_000L, s.loopStartMs)
         assertEquals(35_000L, s.loopEndMs)
@@ -649,16 +649,30 @@ class PlayerViewModelTest {
         emit(PlayerEvent.StateChanged(PlayerPhase.READY, false))
         assertNotNull(vm.uiState.value.loopStartMs)
 
-        vm.setQuickLoop() // 已设置 → 关闭（切换开关）
+        // 已设置再点 → 关闭（区间记入会话记忆）
+        vm.setQuickLoop()
         s = vm.uiState.value
         assertNull(s.loopStartMs)
         assertNull(s.loopEndMs)
         assertFalse(s.loopEnabled)
         assertEquals(1, manager.clearSelectionCalls)
 
-        vm.setQuickLoop() // 再次打开仍可用（A=当前帧）
+        // 位置前移后再开启 → 完整恢复上次区间（不以当前帧重设 A）
+        emit(PlayerEvent.PositionTick(60_000, 60_000))
+        vm.setQuickLoop()
         s = vm.uiState.value
-        assertNotNull(s.loopStartMs)
+        assertEquals(5_000L, s.loopStartMs)
+        assertEquals(35_000L, s.loopEndMs)
+        assertTrue(s.loopEnabled)
+        assertEquals(2, manager.selectionCalls.size)
+
+        // 「清除」= 彻底清除（含会话记忆）：再次开启走默认当前帧
+        vm.clearSelection()
+        emit(PlayerEvent.PositionTick(60_000, 60_000))
+        vm.setQuickLoop()
+        s = vm.uiState.value
+        assertEquals(60_000L, s.loopStartMs)
+        assertEquals(90_000L, s.loopEndMs)
         assertTrue(s.loopEnabled)
     }
 

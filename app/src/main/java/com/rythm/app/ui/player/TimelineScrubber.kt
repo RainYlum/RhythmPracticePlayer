@@ -16,10 +16,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
@@ -32,10 +32,13 @@ import kotlin.math.abs
 enum class AbDragTarget { A, B }
 
 /**
- * 时间轴（宽长条版，详细设计 3.4.3）：宽条轨道上绘制进度 + 缓冲 + AB 区间透明遮罩
+ * 时间轴（宽长条版，详细设计 3.4.3）：直角长方条轨道上绘制进度 + 缓冲 + AB 区间透明遮罩
  * + A/B 端点手柄（拖动实时微调，FR-04.8）+ 帧标记刻度点。
- * 调整方式：仅支持拖动进度游标（末端）→ scrubTo（VM 内 80ms 节流）、松手 → commitScrub；
- * 拖动 A/B 端点 → 实时微调；按下轨道其它位置不响应、单击不跳转（防误触）。
+ * 当前帧指示 = 刻度线 + 轨道下方三角形标记（替换圆头游标）：0ms 处同样绘制，
+ * 配合轨道任意位置点击/拖动定位（0 秒处标记仅露半边难命中，点击轨道即可定位）。
+ * 调整方式：拖动三角标记或点击/拖动轨道任意位置 → scrubTo（VM 内 40ms 节流精确预览）、
+ * 松手 → commitScrub；拖动 A/B 端点 → 实时微调；按下 A/B 端点命中区优先进入 AB 微调。
+ * AB 区间激活（[progressLocked]）时禁止进度拖动/点击改变当前帧，仅 A/B 端点可操作。
  *
  * 手势协程 key 仅 durationMs：A/B 值与进度值拖动中实时变化，若作为 key 会重启协程打断手势，
  * 故经 rememberUpdatedState 在回调内读最新值。
@@ -47,6 +50,7 @@ fun TimelineScrubber(
     durationMs: Long,
     loopStartMs: Long?,
     loopEndMs: Long?,
+    progressLocked: Boolean = false,
     marks: List<FrameMark>,
     onScrub: (Long) -> Unit,
     onCommit: (Long) -> Unit,
@@ -61,15 +65,15 @@ fun TimelineScrubber(
     val abEdgeColor = MaterialTheme.colorScheme.tertiary
     val markColor = MaterialTheme.colorScheme.tertiary
 
-    var dragging by remember { mutableStateOf(false) }
+    // 拖动的最终目标（commit 时用）：拖动中经 onScrub 实时推进，松手后精确定位
     var dragTargetMs by remember { mutableLongStateOf(0L) }
     var abDragTarget by remember { mutableStateOf<AbDragTarget?>(null) }
     var lastDragX by remember { mutableFloatStateOf(0f) }
 
     // 手势协程 key 仅 durationMs，须经 State 读最新参值（不用 by 解包，协程内 .value 实时）
-    val latestPositionMs = rememberUpdatedState(positionMs)
     val latestLoopStart = rememberUpdatedState(loopStartMs)
     val latestLoopEnd = rememberUpdatedState(loopEndMs)
+    val latestProgressLocked = rememberUpdatedState(progressLocked)
     val latestOnScrub = rememberUpdatedState(onScrub)
     val latestOnCommit = rememberUpdatedState(onCommit)
     val latestOnNudgeA = rememberUpdatedState(onNudgeA)
@@ -98,12 +102,7 @@ fun TimelineScrubber(
                     val b = latestLoopEnd.value
                     b != null && abs(x - xOfMs(b)) <= hitRadiusPx
                 }
-                // 进度游标命中：仅拖动末端游标调整进度（FR-04.7，轨道其它位置按下不响应）
-                val hitThumb: (Float) -> Boolean = { x ->
-                    abs(x - xOfMs(latestPositionMs.value)) <= hitRadiusPx
-                }
-
-                // 当前手势是否处于进度拖动（false = 按下位未命中游标/端点，吞掉手势不调整）
+                // 当前手势是否处于进度拖动（false = 按下位命中 A/B 端点，进入端点微调）
                 var thumbDragging = false
 
                 detectHorizontalDragGestures(
@@ -119,14 +118,17 @@ fun TimelineScrubber(
                                 abDragTarget = AbDragTarget.B
                                 latestOnAbDragStarted.value(AbDragTarget.B)
                             }
-                            hitThumb(offset.x) -> {
+                            // AB 点激活：禁止进度条拖动/点击改变当前帧（仅 AB 端点可拖动）
+                            else -> if (latestProgressLocked.value) {
+                                latestOnAbDragStarted.value(null)
+                            } else {
+                                // 进度调整：命中三角标记直接拖，点击/按下轨道其它位置同样定位（恢复点击跳转），
+                                // 0ms 处三角仅露半边难命中，点击轨道即可定位
                                 thumbDragging = true
-                                dragging = true
                                 dragTargetMs = toMs(offset.x)
                                 latestOnScrub.value(dragTargetMs)
                                 latestOnAbDragStarted.value(null)
                             }
-                            else -> latestOnAbDragStarted.value(null)
                         }
                     },
                     onHorizontalDrag = { change, _ ->
@@ -145,12 +147,10 @@ fun TimelineScrubber(
                     },
                     onDragEnd = {
                         if (thumbDragging) latestOnCommit.value(dragTargetMs)
-                        dragging = false
                         abDragTarget = null
                         thumbDragging = false
                     },
                     onDragCancel = {
-                        dragging = false
                         abDragTarget = null
                         thumbDragging = false
                     },
@@ -163,22 +163,16 @@ fun TimelineScrubber(
             val h = size.height
             val y = h / 2f
             val trackH = 14.dp.toPx()
-            val radius = trackH / 2f
+            val trackTop = y - trackH / 2f
 
-            // 宽条轨道
-            drawRoundRect(
-                color = trackColor,
-                topLeft = Offset(0f, y - radius),
-                size = Size(w, trackH),
-                cornerRadius = CornerRadius(radius),
-            )
+            // 长方条轨道（直角，无圆头圆柱/圆点游标）
+            drawRect(color = trackColor, topLeft = Offset(0f, trackTop), size = Size(w, trackH))
             // 缓冲
             if (bufferedMs > 0L) {
-                drawRoundRect(
+                drawRect(
                     color = bufferedColor,
-                    topLeft = Offset(0f, y - radius),
+                    topLeft = Offset(0f, trackTop),
                     size = Size((w * bufferedMs.toFloat() / durationMs).coerceAtMost(w), trackH),
-                    cornerRadius = CornerRadius(radius),
                 )
             }
             // AB 区间透明遮罩 + 端点竖线（FR-04.5：按对齐后 A'/B' 绘制）
@@ -204,21 +198,33 @@ fun TimelineScrubber(
                     center = Offset(mx.coerceIn(0f, w), y),
                 )
             }
-            // 播放进度宽条 + 游标
+            // 播放进度长方条
             val progressW = w * positionMs.toFloat() / durationMs
             if (progressW > 0f) {
-                drawRoundRect(
+                drawRect(
                     color = progressColor,
-                    topLeft = Offset(0f, y - radius),
+                    topLeft = Offset(0f, trackTop),
                     size = Size(progressW.coerceAtMost(w), trackH),
-                    cornerRadius = CornerRadius(radius),
-                )
-                drawCircle(
-                    color = progressColor,
-                    radius = 8.dp.toPx(),
-                    center = Offset(progressW.coerceIn(0f, w), y),
                 )
             }
+            // 当前帧指示：刻度线（轨道上方出头并贯穿轨道）+ 三角标记（轨道下方，尖端朝上对齐刻度线）。
+            // 0ms 时同样绘制与可命中 → 起始位置也能拖动（替代原圆头游标：仅进度 > 0 才绘制且难命中）
+            val tickX = progressW.coerceIn(0f, w)
+            val tickAbove = 12.dp.toPx()
+            drawRect(
+                color = progressColor,
+                topLeft = Offset(tickX - 1.5.dp.toPx(), trackTop - tickAbove),
+                size = Size(3.dp.toPx(), trackH + tickAbove),
+            )
+            val triPath = Path().apply {
+                val triHalfW = 9.dp.toPx()
+                val triH = 9.dp.toPx()
+                moveTo(tickX - triHalfW, trackTop + trackH + triH)
+                lineTo(tickX + triHalfW, trackTop + trackH + triH)
+                lineTo(tickX, trackTop + trackH)
+                close()
+            }
+            drawPath(triPath, progressColor)
             if (start != null) {
                 drawAbHandle(
                     center = Offset((w * start.toFloat() / durationMs).coerceIn(0f, w), y),
@@ -231,16 +237,6 @@ fun TimelineScrubber(
                     center = Offset((w * end.toFloat() / durationMs).coerceIn(0f, w), y),
                     isDragging = abDragTarget == AbDragTarget.B,
                     color = abEdgeColor,
-                )
-            }
-            // 拖动预览光标
-            if (dragging) {
-                val dx = w * dragTargetMs.toFloat() / durationMs
-                drawCircle(
-                    color = Color.White,
-                    radius = 8.dp.toPx(),
-                    center = Offset(dx.coerceIn(0f, w), y),
-                    style = Stroke(width = 2.dp.toPx()),
                 )
             }
         }

@@ -1,5 +1,9 @@
 import java.util.Properties
 
+// 应用版本号：单一来源，供 defaultConfig 与发布产物文件名（rythm-1.0.1.apk）共用
+val appVersionName = "1.0.1"
+val appVersionCode = 2
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -22,8 +26,8 @@ android {
         applicationId = "com.rythm.app"
         minSdk = 29
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -65,6 +69,15 @@ android {
                     "-Dnet.bytebuddy.experimental=true",
                 )
             }
+        }
+    }
+}
+
+// 发布产物命名：项目简写 + 版本号（如 rythm-1.0.1.apk），仅 release 变体
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        variant.outputs.forEach { output ->
+            output.outputFileName.set("rythm-${appVersionName}.apk")
         }
     }
 }

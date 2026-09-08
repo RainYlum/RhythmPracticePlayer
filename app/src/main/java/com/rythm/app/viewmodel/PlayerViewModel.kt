@@ -70,6 +70,9 @@ class PlayerViewModel(
     private var marksJob: Job? = null
     private var frameRate: Float? = null
     private var lastScrubAt = 0L
+    /** 单次练习内 AB 区间会话记忆：AB 按钮关闭时记录、再次开启完整恢复；「清除」按钮/换视频时清空。 */
+    private var lastLoopStartMs: Long? = null
+    private var lastLoopEndMs: Long? = null
 
     // ==== 视频装载 / 历史恢复（FR-07，详细设计 4.4） ====
 
@@ -148,6 +151,9 @@ class PlayerViewModel(
     }
 
     private fun resetSessionState(uriString: String) {
+        // AB 会话记忆仅单次练习内有效：换视频即清空
+        lastLoopStartMs = null
+        lastLoopEndMs = null
         _uiState.value = PlaybackUiState(
             videoUri = uriString,
             countdownSec = 3,
@@ -280,12 +286,12 @@ class PlayerViewModel(
         player?.seekTo(positionMs.coerceIn(0L, upper), exact = true)
     }
 
-    /** 拖动实时预览（FR-05.1）：80ms 节流 + 就近关键帧（exact=false），松手 commitScrub 精确定位。 */
+    /** 拖动实时预览（FR-05.1）：40ms 节流 + 精确 seek（exact=true），拖动中逐帧反馈便于找帧，松手 commitScrub 精确定位。 */
     fun scrubTo(targetMs: Long) {
         val now = clock()
         if (now - lastScrubAt < SCRUB_THROTTLE_MS) return
         lastScrubAt = now
-        seekTo(targetMs, exact = false)
+        seekTo(targetMs, exact = true)
     }
 
     /** 拖动松手：精确定位（交互事务立即回读）。 */
@@ -361,19 +367,34 @@ class PlayerViewModel(
     }
 
     /**
-     * 一键设置 A/B（快捷设点，开关语义）：未设置 → 当前帧为 A，延后 [QUICK_LOOP_SPAN_MS]（30s）为 B，
-     * B 超时长则 clamp 到末尾，不满足最短区间时仅报错不改选区；已设置 → 关闭选区（切换开关）。
+     * 一键 AB 设点（开关注销，单次练习内区间保留）：未设置 → 优先完整恢复本次练习上次关闭时记忆的
+     * AB 区间；无记忆则默认以当前帧为 A，延后 [QUICK_LOOP_SPAN_MS]（30s）为 B（超时长 clamp 到末尾，
+     * 不满足最短区间时仅报错不改选区）；已设置 → 关闭并记忆当前区间供再次开启恢复（「清除」为彻底清除）。
      */
     fun setQuickLoop() {
         val s = _uiState.value
         if (s.phase != PlayerPhase.READY || s.durationMs <= 0L) return
-        // 已设 A（含仅设 A 的 WAIT_B）= 已开启 → 再点关闭
+        // 已设置（含仅设 A 的 WAIT_B）→ 关闭：区间记入会话记忆供再次开启恢复
         if (s.loopStartMs != null) {
-            clearSelection()
+            lastLoopStartMs = s.loopStartMs
+            lastLoopEndMs = s.loopEndMs
+            clearSelectionInternal()
             return
         }
-        val a = s.currentPositionMs.coerceIn(0L, s.durationMs)
-        when (val result = loopPolicy.validate(a, (a + QUICK_LOOP_SPAN_MS).coerceAtMost(s.durationMs), s.durationMs)) {
+        val a: Long
+        val b: Long
+        val lastStart = lastLoopStartMs
+        val lastEnd = lastLoopEndMs
+        if (lastStart != null && lastEnd != null && lastEnd > lastStart) {
+            // 上次关闭时记忆的区间 → 完整恢复，不以当前帧重设
+            a = lastStart
+            b = lastEnd
+        } else {
+            // 默认：当前帧为 A 点
+            a = s.currentPositionMs.coerceIn(0L, s.durationMs)
+            b = (a + QUICK_LOOP_SPAN_MS).coerceAtMost(s.durationMs)
+        }
+        when (val result = loopPolicy.validate(a, b, s.durationMs)) {
             is LoopValidation.Invalid -> _uiState.update {
                 it.copy(error = PlayerError(PlayerErrorCode.LOOP_INVALID, reasonText(result.reason), recoverable = true))
             }
@@ -384,8 +405,15 @@ class PlayerViewModel(
         }
     }
 
-    /** 清除选区（I2 单次模式无需重建源；连续循环时先关循环再清）。 */
+    /** 清除选区（I2 单次模式无需重建源；连续循环时先关循环再清）。彻底清除：同时清空会话记忆，下次 AB 开启走默认当前帧。 */
     fun clearSelection() {
+        lastLoopStartMs = null
+        lastLoopEndMs = null
+        clearSelectionInternal()
+    }
+
+    /** 清除选区（引擎侧 + state），不动会话记忆（AB 按钮关闭路径复用）。 */
+    private fun clearSelectionInternal() {
         val s = _uiState.value
         if (s.continuousLoop) player?.enableContinuousLoop(false)
         player?.clearSelection()
@@ -406,7 +434,7 @@ class PlayerViewModel(
     /** A/B 微调（FR-04.8，微调按钮）：±100ms 由 UI 换算 deltaMs 传入；调整后当前帧精确跟随 A 点。 */
     fun nudgeLoopA(deltaMs: Long) = nudgeLoopAInternal(deltaMs, exact = true)
 
-    /** 拖动 A 手柄实时跟随（FR-04.8）：exact=false 就近关键帧，拖动流畅，当前帧同步跳转。 */
+    /** 拖动 A 手柄实时跟随（FR-04.8）：exact=false 就近关键帧，拖动流畅；精确 seek 高频拖动会积压导致滞后更严重。 */
     fun nudgeLoopADrag(deltaMs: Long) = nudgeLoopAInternal(deltaMs, exact = false)
 
     private fun nudgeLoopAInternal(deltaMs: Long, exact: Boolean) {
@@ -433,7 +461,7 @@ class PlayerViewModel(
     /** B 微调（微调按钮）：调整后当前帧精确跟随 B 点。 */
     fun nudgeLoopB(deltaMs: Long) = nudgeLoopBInternal(deltaMs, exact = true)
 
-    /** 拖动 B 手柄实时跟随：exact=false 就近关键帧。 */
+    /** 拖动 B 手柄实时跟随：exact=false 就近关键帧，拖动流畅；精确 seek 高频拖动会积压导致滞后更严重。 */
     fun nudgeLoopBDrag(deltaMs: Long) = nudgeLoopBInternal(deltaMs, exact = false)
 
     private fun nudgeLoopBInternal(deltaMs: Long, exact: Boolean) {
@@ -548,8 +576,8 @@ class PlayerViewModel(
     }
 
     companion object {
-        /** 拖动节流（详细设计 3.4.3：~80ms 高通道）。 */
-        const val SCRUB_THROTTLE_MS = 80L
+        /** 拖动节流（详细设计 3.4.3 高通道；收紧至 40ms 配合精确 seek，拖动逐帧反馈找帧）。 */
+        const val SCRUB_THROTTLE_MS = 40L
 
         /** 选区最短区间（LoopPolicy 默认 minIntervalMs=100，与帧时长 2 帧取大者）。 */
         const val MIN_LOOP_MS = 100L

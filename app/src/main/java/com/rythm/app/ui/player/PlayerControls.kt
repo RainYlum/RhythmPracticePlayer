@@ -149,13 +149,15 @@ fun PlayerControlsPanel(
                 )
             }
 
-            // 进度条（仅拖动末端游标调整：scrub 节流 80ms 高频通道 / 松手精确定位；单击不跳转）
+            // 进度条（拖动三角标记或点击/拖动轨道任意位置调整：scrub 节流 40ms 精确预览 / 松手精确定位）
+            // AB 点激活时锁定：禁止拖动/点击改变当前帧，仅 AB 端点可拖动
             TimelineScrubber(
                 positionMs = positionMs,
                 bufferedMs = state.bufferedPositionMs,
                 durationMs = state.durationMs,
                 loopStartMs = state.loopStartMs,
                 loopEndMs = state.loopEndMs,
+                progressLocked = state.loopStartMs != null,
                 marks = marks,
                 onScrub = onScrub,
                 onCommit = onSeek,

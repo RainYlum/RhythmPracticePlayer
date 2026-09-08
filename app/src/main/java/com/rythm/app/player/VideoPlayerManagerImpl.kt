@@ -408,14 +408,18 @@ class VideoPlayerManagerImpl(
                 emitTick()
                 countdown.onPositionTick(displayPosMs)
                 countdown.remainingMs()?.let { _events.tryEmit(PlayerEvent.CountdownProgress(it)) }
-                selectionMonitor.onPositionTick(
-                    enginePosMs = exoPlayer.currentPosition.coerceAtLeast(0L),
-                    selectionActive = selectionStartMs != null && selectionEndMs != null,
-                    continuousLoop = continuousLoop,
-                    startMs = selectionStartMs ?: 0L,
-                    endMs = selectionEndMs ?: 0L,
-                    nowMs = android.os.SystemClock.elapsedRealtime(),
-                )
+                // 仅播放中监听选区越界（I2「播到 B' 结束练习」）：暂停态 seek/端点拖动/A/B 微调预览
+                // 落点 ≥ B' 时不得触发复位（否则拖动 B 端点会被拉回 A），播放起点恒为 A' 不受影响
+                if (exoPlayer.isPlaying) {
+                    selectionMonitor.onPositionTick(
+                        enginePosMs = exoPlayer.currentPosition.coerceAtLeast(0L),
+                        selectionActive = selectionStartMs != null && selectionEndMs != null,
+                        continuousLoop = continuousLoop,
+                        startMs = selectionStartMs ?: 0L,
+                        endMs = selectionEndMs ?: 0L,
+                        nowMs = android.os.SystemClock.elapsedRealtime(),
+                    )
+                }
             }
         }
     }

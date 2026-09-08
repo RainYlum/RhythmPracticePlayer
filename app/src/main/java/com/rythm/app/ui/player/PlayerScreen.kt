@@ -344,12 +344,14 @@ internal fun ImmersiveLayer(
             }
         }
         // ExitButton（zIndex 置顶于丢弃容器，保证可命中；两次手势语义由容器统一判定）
+        // 黑色半透明圆形背景：白色叉号在亮色画面/白背景上保持可见
         androidx.compose.material3.IconButton(
             onClick = onExitGesture,
             modifier = Modifier
                 .align(androidx.compose.ui.Alignment.TopStart)
                 .padding(8.dp)
-                .zIndex(1f),
+                .zIndex(1f)
+                .background(Color(0x66000000), androidx.compose.foundation.shape.CircleShape),
         ) {
             androidx.compose.material3.Icon(
                 imageVector = Icons.Filled.Close,

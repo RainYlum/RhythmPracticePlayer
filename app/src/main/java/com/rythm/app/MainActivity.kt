@@ -13,7 +13,7 @@ import com.rythm.app.viewmodel.LibraryViewModel
 import com.rythm.app.viewmodel.ViewModelFactory
 
 /**
- * 主页（FR-11）：视频库列表；竖屏固定（NFR-03.4）。导入 → 播放页跳转均经 VideoLibraryScreen。
+ * 主页（FR-11）：视频库列表；支持旋转（随用户屏幕方向变化）。导入 → 播放页跳转均经 VideoLibraryScreen。
  */
 class MainActivity : ComponentActivity() {
 
