@@ -1,8 +1,8 @@
 import java.util.Properties
 
-// 应用版本号：单一来源，供 defaultConfig 与发布产物文件名（rythm-1.0.1.apk）共用
-val appVersionName = "1.0.1"
-val appVersionCode = 2
+// 应用版本号：单一来源，供 defaultConfig 与发布产物文件名（rythm-1.0.2.apk）共用
+val appVersionName = "1.0.2"
+val appVersionCode = 3
 
 plugins {
     alias(libs.plugins.android.application)
@@ -73,7 +73,7 @@ android {
     }
 }
 
-// 发布产物命名：项目简写 + 版本号（如 rythm-1.0.1.apk），仅 release 变体
+// 发布产物命名：项目简写 + 版本号（如 rythm-1.0.2.apk），仅 release 变体
 androidComponents {
     onVariants(selector().withBuildType("release")) { variant ->
         variant.outputs.forEach { output ->
