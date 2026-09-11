@@ -28,6 +28,7 @@ class ViewModelFactory(private val container: AppContainer) : ViewModelProvider.
                 videoRepository = container.videoRepository,
                 thumbStore = container.thumbStore,
                 frameGrabber = container.frameGrabber,
+                preferenceRepository = container.preferenceRepository,
             ) as T
 
         modelClass.isAssignableFrom(BookmarkViewModel::class.java) ->

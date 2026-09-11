@@ -41,11 +41,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.ScrollState
 import com.rythm.app.model.FrameMark
 import com.rythm.app.model.PlaybackSpeed
 import com.rythm.app.model.PlayerPhase
@@ -85,6 +89,10 @@ fun PlayerControlsPanel(
     onAudioOffset: (Int) -> Unit,
     onAddMark: (String) -> Unit,
     onOpenBookmarks: () -> Unit,
+    /** 教学高亮坐标上报（key → 窗口坐标；null = 不启用，如冒烟测试）。 */
+    tutorialBounds: MutableMap<String, Rect>? = null,
+    /** 外部接管滚动（教学需要按目标控件位置滚动面板；null = 内部滚动）。 */
+    panelScrollState: ScrollState? = null,
 ) {
     // 外推位置（AC-02.3）：暂停/ENDED 时引擎确认值直接返回；按时长钳制防过冲
     val positionMs = state.extrapolatedDisplayPositionMs(nowMs)
@@ -108,6 +116,8 @@ fun PlayerControlsPanel(
     // 控制面板最大高度（屏幕 50%，FR：默认三行完整可见；展开后内容超出时内部滚动）
     // + 50% 透明背景：面板内可见视频画面
     val panelMaxHeight = LocalConfiguration.current.screenHeightDp.dp * 0.50f
+    // 教学外部接管滚动：确保被讲解的目标控件滚动到可见区域后再高亮
+    val scrollState = panelScrollState ?: rememberScrollState()
 
     Box(Modifier.fillMaxSize()) {
         Column(
@@ -116,7 +126,7 @@ fun PlayerControlsPanel(
                 .align(Alignment.BottomCenter)
                 .heightIn(max = panelMaxHeight)
                 .background(Color(0x80000000))
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(horizontal = 12.dp, vertical = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -151,20 +161,26 @@ fun PlayerControlsPanel(
 
             // 进度条（拖动三角标记或点击/拖动轨道任意位置调整：scrub 节流 40ms 精确预览 / 松手精确定位）
             // AB 点激活时锁定：禁止拖动/点击改变当前帧，仅 AB 端点可拖动
-            TimelineScrubber(
-                positionMs = positionMs,
-                bufferedMs = state.bufferedPositionMs,
-                durationMs = state.durationMs,
-                loopStartMs = state.loopStartMs,
-                loopEndMs = state.loopEndMs,
-                progressLocked = state.loopStartMs != null,
-                marks = marks,
-                onScrub = onScrub,
-                onCommit = onSeek,
-                onNudgeA = onNudgeDragA,
-                onNudgeB = onNudgeDragB,
-                onAbDragStarted = { nudgeTarget = it },
-            )
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .onGloballyPositioned { tutorialBounds?.set("progressBar", it.boundsInRoot()) },
+            ) {
+                TimelineScrubber(
+                    positionMs = positionMs,
+                    bufferedMs = state.bufferedPositionMs,
+                    durationMs = state.durationMs,
+                    loopStartMs = state.loopStartMs,
+                    loopEndMs = state.loopEndMs,
+                    progressLocked = state.loopStartMs != null,
+                    marks = marks,
+                    onScrub = onScrub,
+                    onCommit = onSeek,
+                    onNudgeA = onNudgeDragA,
+                    onNudgeB = onNudgeDragB,
+                    onAbDragStarted = { nudgeTarget = it },
+                )
+            }
             Spacer(Modifier.height(4.dp))
 
             // 播放控制行：步进 + 播放（Box 居中布局，不受右端「更多功能」宽度影响）；
@@ -178,7 +194,9 @@ fun PlayerControlsPanel(
                     StepButton("−0.1s") { onStepBack(100L) }
                     IconButton(
                         onClick = { hideNudge(); if (state.isPlaying) onPause() else onPlay() },
-                        modifier = Modifier.size(56.dp),
+                        modifier = Modifier
+                            .size(56.dp)
+                            .onGloballyPositioned { tutorialBounds?.set("playButton", it.boundsInRoot()) },
                     ) {
                         Icon(
                             imageVector = if (state.phase == PlayerPhase.ENDED) Icons.Filled.Replay else {
@@ -189,7 +207,9 @@ fun PlayerControlsPanel(
                             modifier = Modifier.size(40.dp),
                         )
                     }
-                    StepButton("+0.1s") { onStepFwd(100L) }
+                    Box(Modifier.onGloballyPositioned { tutorialBounds?.set("stepButton", it.boundsInRoot()) }) {
+                        StepButton("+0.1s") { onStepFwd(100L) }
+                    }
                     StepButton("+1s") { onStepFwd(1_000L) }
                 }
                 if (!panelExpanded) {
@@ -197,7 +217,8 @@ fun PlayerControlsPanel(
                         onClick = onExpandMore,
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
-                            .testTag("moreButton"),
+                            .testTag("moreButton")
+                            .onGloballyPositioned { tutorialBounds?.set("moreButton", it.boundsInRoot()) },
                     ) {
                         Text("更多功能", color = Color.White, style = MaterialTheme.typography.labelLarge)
                     }
@@ -217,6 +238,7 @@ fun PlayerControlsPanel(
                         selected = state.loopStartMs != null,
                         onClick = { hideNudge(); onQuickLoop() },
                         label = { Text(abLabel, color = Color.White, style = MaterialTheme.typography.labelMedium) },
+                        modifier = Modifier.onGloballyPositioned { tutorialBounds?.set("loopButton", it.boundsInRoot()) },
                     )
                     Spacer(Modifier.width(8.dp))
                     Text("连续循环", color = Color.White, style = MaterialTheme.typography.labelSmall)
@@ -238,7 +260,9 @@ fun PlayerControlsPanel(
                     Box {
                         TextButton(
                             onClick = { speedMenuOpen = true },
-                            modifier = Modifier.testTag("speedButton"),
+                            modifier = Modifier
+                                .testTag("speedButton")
+                                .onGloballyPositioned { tutorialBounds?.set("speedButton", it.boundsInRoot()) },
                         ) {
                             Text(
                                 text = "${state.playbackSpeed.label} ▾",
@@ -316,6 +340,7 @@ fun PlayerControlsPanel(
                             selected = false,
                             onClick = { countdownMenuOpen = true },
                             label = { Text("倒计时 ${state.countdownSec}s", color = Color.White, style = MaterialTheme.typography.labelMedium) },
+                            modifier = Modifier.onGloballyPositioned { tutorialBounds?.set("countdownButton", it.boundsInRoot()) },
                         )
                         DropdownMenu(
                             expanded = countdownMenuOpen,
@@ -352,6 +377,7 @@ fun PlayerControlsPanel(
                         text = "音频延迟 ${formatAudioOffset(state.audioOffsetMs)}",
                         color = Color.White,
                         style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.onGloballyPositioned { tutorialBounds?.set("audioDelay", it.boundsInRoot()) },
                     )
                     TextButton(
                         onClick = { onAudioOffset(state.audioOffsetMs + AUDIO_DELAY_STEP_MS) },
@@ -360,7 +386,12 @@ fun PlayerControlsPanel(
                         Text("+5ms", color = Color.White, style = MaterialTheme.typography.labelMedium)
                     }
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { showAddMarkDialog = true }, modifier = Modifier.size(32.dp)) {
+                    IconButton(
+                        onClick = { showAddMarkDialog = true },
+                        modifier = Modifier
+                            .size(32.dp)
+                            .onGloballyPositioned { tutorialBounds?.set("markAddButton", it.boundsInRoot()) },
+                    ) {
                         Icon(Icons.Filled.Add, contentDescription = "添加帧标记", tint = Color.White, modifier = Modifier.size(18.dp))
                     }
                     IconButton(onClick = onOpenBookmarks, modifier = Modifier.size(32.dp)) {

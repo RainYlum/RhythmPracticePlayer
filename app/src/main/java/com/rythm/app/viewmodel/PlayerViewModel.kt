@@ -14,6 +14,7 @@ import com.rythm.app.domain.policy.LoopValidation
 import com.rythm.app.domain.policy.StepRequest
 import com.rythm.app.model.FrameMark
 import com.rythm.app.model.HistoryEntry
+import com.rythm.app.model.OnboardingStatus
 import com.rythm.app.model.PlaybackSpeed
 import com.rythm.app.model.PlaybackUiState
 import com.rythm.app.model.PlayerError
@@ -59,6 +60,9 @@ class PlayerViewModel(
 
     private val _uiState = MutableStateFlow(PlaybackUiState())
     val uiState: StateFlow<PlaybackUiState> = _uiState
+    /** 教学引导状态（三阶段完成标记，FR：导入首个视频后播放页教学 / 首次点更多功能后功能教学）。 */
+    val onboarding: StateFlow<OnboardingStatus> = preferenceRepository.onboarding
+        .stateIn(viewModelScope, SharingStarted.Eagerly, OnboardingStatus())
     /** 帧标记沉浸字幕（FR-06.6，v1.5）：仅沉浸播放态派生，暂停/退出沉浸即清空（详细设计 5.7）。 */
     private val _marks = MutableStateFlow<List<FrameMark>>(emptyList())
     val activeCaptions: StateFlow<List<String>> = combine(_uiState, _marks) { state, marks ->
@@ -252,7 +256,8 @@ class PlayerViewModel(
             p.play()
             _uiState.update { it.copy(error = null) }
         } else {
-            p.startCountdown(start)
+            // 前导窗口 = 倒计时秒数×1000（3s/5s 完整预听，倒计时数字从配置值开始倒数）
+            p.startCountdown(start, s.countdownSec * 1000L)
             _uiState.update { it.copy(error = null) }
         }
     }
@@ -506,6 +511,16 @@ class PlayerViewModel(
         _uiState.update { it.copy(countdownSec = clamped) }
         viewModelScope.launch { preferenceRepository.setCountdownSec(clamped) }
         if (s.isCountdown && clamped == 0) player?.cancelCountdown()
+    }
+
+    /** 播放页教学完成标记（进度条/步进/播放/退出/更多功能）。 */
+    fun markPlayerTutorialDone() {
+        viewModelScope.launch { preferenceRepository.setPlayerTutorialDone(true) }
+    }
+
+    /** 更多功能教学完成标记（AB 循环/倍速/音频延迟/倒计时/帧标记）。 */
+    fun markMoreMenuTutorialDone() {
+        viewModelScope.launch { preferenceRepository.setMoreMenuTutorialDone(true) }
     }
 
     /** 帧标记（FR-06）：当前归一化位置 + 帧画面缩略图（≤320px，R-12）。 */

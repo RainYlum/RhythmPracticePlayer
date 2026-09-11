@@ -48,8 +48,10 @@ interface VideoPlayerManager {
     /** 连续循环开关：开启要求选区有效，切换重建整链并保持归一化位置；关闭重建原片源。 */
     fun enableContinuousLoop(enabled: Boolean)
 
-    /** 倒计时预听（FR-10 路径 A）：回退 3s 音频先行，位置到 S 附近发 CountdownFinished。 */
-    fun startCountdown(fromMs: Long)
+    /**
+     * 倒计时预听（FR-10 路径 A）：回退 [leadMs]（= countdownSec×1000，3s/5s）音频先行，位置到 S 附近发 CountdownFinished。
+     */
+    fun startCountdown(fromMs: Long, leadMs: Long)
 
     /** 取消倒计时：暂停并回 S（I8 起点语义）。 */
     fun cancelCountdown()

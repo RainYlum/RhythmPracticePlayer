@@ -3,13 +3,13 @@ package com.rythm.app.player
 /**
  * 倒计时预听控制器（FR-10 路径 A：UI 静止帧遮罩 + 本类只负责音频先行时序）：
  *
- * start(S)：
+ * start(S, lead 前导毫秒数)：
  *  ① 若当前不在 S 附近 → seekTo(S) 预位（exact）；
- *  ② seekTo(max(0, S − 3000)) 回退；
+ *  ② seekTo(max(0, S − lead)) 回退（lead = 预听时长，随 countdownSec 配置 3s/5s）；
  *  ③ play() —— 音频按当前倍速先行，画面被 UI 遮罩定格。
  *
  * 完成判定：引擎位置 ≥ S − 容差（随 250ms 轮询）→ onFinished(S)；
- * 兜底：play 后 WATCHDOG_MS 内未达 S（seek 卡死/引擎异常）→ onFallback 降级正常播放（R-03c）。
+ * 兜底：play 后 WATCHDOG_MS + lead 内未达 S（seek 卡死/引擎异常）→ onFallback 降级正常播放（R-03c）。
  * cancel()：pause + seekTo(S) 精确复位（I8 起点语义），由 UI 取消按钮触发。
  *
  * 全部位置均为归一化时间轴值（I5）。控制器闭包与时钟均注入，便于单测。
@@ -26,18 +26,21 @@ class CountdownController(
 
     private var activeFromMs: Long? = null
     private var startedAtMs = 0L
+    private var leadWindowMs = LEAD_WINDOW_MS
 
     val isActive: Boolean
         get() = activeFromMs != null
 
-    fun start(fromMs: Long) {
+    /** @param leadMs 前导预听窗口（默认 3s；countdownSec=5 时传入 5000）。 */
+    fun start(fromMs: Long, leadMs: Long = LEAD_WINDOW_MS) {
         if (activeFromMs != null) return
+        leadWindowMs = leadMs.coerceAtLeast(0L)
         // ① 预位 S（避免从远处直接回退造成起点漂移）
         if (kotlin.math.abs(currentPosition() - fromMs) > ARRIVE_TOLERANCE_MS) {
             seekTo(fromMs, true)
         }
         // ② 回退前导窗口，音频先行
-        seekTo((fromMs - LEAD_WINDOW_MS).coerceAtLeast(0L), true)
+        seekTo((fromMs - leadWindowMs).coerceAtLeast(0L), true)
         activeFromMs = fromMs
         startedAtMs = clock()
         // ③ 起播
@@ -56,8 +59,8 @@ class CountdownController(
         val fromMs = activeFromMs ?: return
         if (positionMs >= fromMs - ARRIVE_TOLERANCE_MS) {
             finish(fromMs)
-        } else if (clock() - startedAtMs > WATCHDOG_MS) {
-            // seek 卡死 / 引擎异常 → 降级正常播放并提示（R-03c 兜底）
+        } else if (clock() - startedAtMs > WATCHDOG_MS + leadWindowMs) {
+            // seek 卡死 / 引擎异常 → 降级正常播放并提示（R-03c 兜底；5s 前导时同步放宽看门狗）
             onFallback("倒计时同步异常，已转为正常播放")
             finish(fromMs)
         }

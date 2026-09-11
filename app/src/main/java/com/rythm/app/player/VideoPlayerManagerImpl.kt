@@ -285,9 +285,9 @@ class VideoPlayerManagerImpl(
         switchSource(restoreDisplayPosition())
     }
 
-    override fun startCountdown(fromMs: Long) {
+    override fun startCountdown(fromMs: Long, leadMs: Long) {
         if (!isPrepared) return
-        countdown.start(fromMs)
+        countdown.start(fromMs, leadMs)
         setPhase(PlayerPhase.COUNTDOWN, isPlaying = exoPlayer.isPlaying)
     }
 

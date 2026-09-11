@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.rythm.app.model.AppSettings
 import com.rythm.app.model.HistoryEntry
+import com.rythm.app.model.OnboardingStatus
 import com.rythm.app.model.PlaybackSpeed
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -25,6 +26,9 @@ interface PreferenceRepository {
 
     val settings: Flow<AppSettings>
 
+    /** 教学引导状态（三阶段完成标记，视频库「再次教学」可整体重置）。 */
+    val onboarding: Flow<OnboardingStatus>
+
     suspend fun saveHistory(entry: HistoryEntry)
 
     suspend fun loadHistory(uri: String): HistoryEntry?
@@ -34,6 +38,15 @@ interface PreferenceRepository {
     suspend fun setDefaultSpeed(speed: PlaybackSpeed)
 
     suspend fun setCountdownSec(sec: Int)
+
+    suspend fun setIntroDone(done: Boolean)
+
+    suspend fun setPlayerTutorialDone(done: Boolean)
+
+    suspend fun setMoreMenuTutorialDone(done: Boolean)
+
+    /** 重置全部教学标记（视频库「再次教学」确认后调用）。 */
+    suspend fun resetOnboarding()
 }
 
 class PreferenceRepositoryImpl(
@@ -46,6 +59,14 @@ class PreferenceRepositoryImpl(
             defaultSpeed = PlaybackSpeed.from(p[KEY_DEFAULT_SPEED] ?: PlaybackSpeed.DEFAULT.value),
             countdownSec = p[KEY_COUNTDOWN_SEC] ?: 3,
             keepScreenOn = p[KEY_KEEP_SCREEN_ON] ?: false,
+        )
+    }
+
+    override val onboarding: Flow<OnboardingStatus> = dataStore.data.map { p ->
+        OnboardingStatus(
+            introDone = p[KEY_INTRO_DONE] ?: false,
+            playerTutorialDone = p[KEY_PLAYER_TUTORIAL_DONE] ?: false,
+            moreMenuTutorialDone = p[KEY_MORE_MENU_TUTORIAL_DONE] ?: false,
         )
     }
 
@@ -75,6 +96,26 @@ class PreferenceRepositoryImpl(
         dataStore.edit { it[KEY_COUNTDOWN_SEC] = sec.coerceIn(0, 5) }
     }
 
+    override suspend fun setIntroDone(done: Boolean) {
+        dataStore.edit { it[KEY_INTRO_DONE] = done }
+    }
+
+    override suspend fun setPlayerTutorialDone(done: Boolean) {
+        dataStore.edit { it[KEY_PLAYER_TUTORIAL_DONE] = done }
+    }
+
+    override suspend fun setMoreMenuTutorialDone(done: Boolean) {
+        dataStore.edit { it[KEY_MORE_MENU_TUTORIAL_DONE] = done }
+    }
+
+    override suspend fun resetOnboarding() {
+        dataStore.edit {
+            it[KEY_INTRO_DONE] = false
+            it[KEY_PLAYER_TUTORIAL_DONE] = false
+            it[KEY_MORE_MENU_TUTORIAL_DONE] = false
+        }
+    }
+
     /** history.* 键超过上限时按 updatedAt 淘汰最旧条目（架构 8.1，LRU）。 */
     private fun trimHistoryLocked(prefs: MutablePreferences) {
         val historyKeys = prefs.asMap().keys.filter { it.name.startsWith(HISTORY_PREFIX) }
@@ -100,5 +141,9 @@ class PreferenceRepositoryImpl(
         val KEY_DEFAULT_SPEED = floatPreferencesKey("settings.default_speed")
         val KEY_COUNTDOWN_SEC = intPreferencesKey("settings.countdown_sec")
         val KEY_KEEP_SCREEN_ON = booleanPreferencesKey("settings.keep_screen_on")
+
+        val KEY_INTRO_DONE = booleanPreferencesKey("onboarding.intro_done")
+        val KEY_PLAYER_TUTORIAL_DONE = booleanPreferencesKey("onboarding.player_tutorial_done")
+        val KEY_MORE_MENU_TUTORIAL_DONE = booleanPreferencesKey("onboarding.more_menu_tutorial_done")
     }
 }

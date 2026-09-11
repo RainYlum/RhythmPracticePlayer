@@ -12,6 +12,7 @@ import com.rythm.app.model.AppSettings
 import com.rythm.app.model.FrameMark
 import com.rythm.app.model.HistoryEntry
 import com.rythm.app.model.LibraryItem
+import com.rythm.app.model.OnboardingStatus
 import com.rythm.app.model.PlaybackSpeed
 import com.rythm.app.model.PlayerError
 import com.rythm.app.model.PlayerErrorCode
@@ -324,9 +325,9 @@ class PlayerViewModelTest {
         vm.setLoopB()
         assertEquals(1, manager.selectionCalls.size)
 
-        vm.play() // countdownSec=3 默认 → startCountdown(A')
+        vm.play() // countdownSec=3 默认 → startCountdown(A', 前导 3s)
 
-        assertEquals(listOf(6_000L), manager.countdownCalls)
+        assertEquals(listOf(6_000L to 3_000L), manager.countdownCalls)
         assertEquals(0, manager.seekCalls.size)
         assertEquals(0, manager.playCalls)
     }
@@ -397,7 +398,7 @@ class PlayerViewModelTest {
 
         vm.play()
 
-        assertEquals(listOf(5_000L), manager.countdownCalls)
+        assertEquals(listOf(5_000L to 3_000L), manager.countdownCalls)
         assertTrue(manager.seekCalls.isEmpty()) // S==A' 交引擎，VM 层不做 seek
     }
 
@@ -453,6 +454,36 @@ class PlayerViewModelTest {
         assertEquals(1, manager.pauseCalls)
         vm.exitImmersive() // 双击退出 = 暂停
         assertEquals(2, manager.pauseCalls)
+    }
+
+    @Test
+    fun `play countdownSec 5 时前导窗口传 5s`() = runTest {
+        vm.loadVideo(uri)
+        advanceUntilIdle()
+        vm.setCountdownSec(5)
+        emit(PlayerEvent.StateChanged(PlayerPhase.READY, false))
+        emit(PlayerEvent.PositionTick(3_000, 3_000))
+
+        vm.play()
+
+        // 倒计时 5s → 前导窗口 5000ms（数字从 5 开始倒数，修复 3s 硬编码）
+        assertEquals(listOf(3_000L to 5_000L), manager.countdownCalls)
+        assertEquals(0, manager.playCalls)
+    }
+
+    @Test
+    fun `教学完成标记委派到持久化`() = runTest {
+        vm.markPlayerTutorialDone()
+        vm.markMoreMenuTutorialDone()
+        advanceUntilIdle() // 持久化为 viewModelScope.launch 异步写入
+
+        assertEquals(listOf(true), prefs.playerTutorialDoneSet)
+        assertEquals(listOf(true), prefs.moreMenuTutorialDoneSet)
+    }
+
+    @Test
+    fun `onboarding 初始状态三阶段均未完成`() = runTest {
+        assertEquals(OnboardingStatus(), vm.onboarding.value)
     }
 
     @Test
@@ -889,7 +920,7 @@ class PlayerViewModelTest {
         val speedCalls = mutableListOf<PlaybackSpeed>()
         val selectionCalls = mutableListOf<Pair<Long, Long>>()
         val continuousLoopCalls = mutableListOf<Boolean>()
-        val countdownCalls = mutableListOf<Long>()
+        val countdownCalls = mutableListOf<Pair<Long, Long>>()
         val audioOffsetCalls = mutableListOf<Int>()
         val videoSurfaceCalls = mutableListOf<android.view.Surface?>()
         var playCalls = 0
@@ -932,7 +963,7 @@ class PlayerViewModelTest {
         }
 
         override fun enableContinuousLoop(enabled: Boolean) = run { continuousLoopCalls += enabled }
-        override fun startCountdown(fromMs: Long) = run { countdownCalls += fromMs }
+        override fun startCountdown(fromMs: Long, leadMs: Long) = run { countdownCalls += fromMs to leadMs }
         override fun cancelCountdown() {
             cancelCountdownCalls++
         }
@@ -978,11 +1009,16 @@ class PlayerViewModelTest {
 
     private class FakePreferenceRepository : PreferenceRepository {
         override val settings = MutableStateFlow(AppSettings())
+        override val onboarding = MutableStateFlow(OnboardingStatus())
         var history: HistoryEntry? = null
         val savedHistories = mutableListOf<HistoryEntry>()
         val removedHistories = mutableListOf<String>()
         val countdownSecSet = mutableListOf<Int>()
         val defaultSpeeds = mutableListOf<PlaybackSpeed>()
+        val introDoneSet = mutableListOf<Boolean>()
+        val playerTutorialDoneSet = mutableListOf<Boolean>()
+        val moreMenuTutorialDoneSet = mutableListOf<Boolean>()
+        var onboardingResetCount = 0
 
         override suspend fun saveHistory(entry: HistoryEntry) {
             savedHistories += entry
@@ -999,6 +1035,22 @@ class PlayerViewModelTest {
 
         override suspend fun setCountdownSec(sec: Int) {
             countdownSecSet += sec
+        }
+
+        override suspend fun setIntroDone(done: Boolean) {
+            introDoneSet += done
+        }
+
+        override suspend fun setPlayerTutorialDone(done: Boolean) {
+            playerTutorialDoneSet += done
+        }
+
+        override suspend fun setMoreMenuTutorialDone(done: Boolean) {
+            moreMenuTutorialDoneSet += done
+        }
+
+        override suspend fun resetOnboarding() {
+            onboardingResetCount++
         }
     }
 

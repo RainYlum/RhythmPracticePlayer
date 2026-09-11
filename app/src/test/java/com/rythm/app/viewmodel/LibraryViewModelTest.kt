@@ -3,10 +3,15 @@ package com.rythm.app.viewmodel
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import com.rythm.app.data.repository.PreferenceRepository
 import com.rythm.app.data.repository.VideoLibraryRepository
 import com.rythm.app.data.repository.VideoRepository
 import com.rythm.app.data.store.ThumbnailStore
+import com.rythm.app.model.AppSettings
+import com.rythm.app.model.HistoryEntry
 import com.rythm.app.model.LibraryItem
+import com.rythm.app.model.OnboardingStatus
+import com.rythm.app.model.PlaybackSpeed
 import com.rythm.app.model.VideoMetadata
 import com.rythm.app.player.FrameGrabber
 import java.io.File
@@ -49,6 +54,7 @@ class LibraryViewModelTest {
     private lateinit var videoRepo: FakeVideoRepository
     private lateinit var thumbStore: FakeThumbnailStore
     private lateinit var grabber: FakeFrameGrabber
+    private lateinit var prefs: FakePreferenceRepository
 
     @Before
     fun setUp() {
@@ -57,6 +63,7 @@ class LibraryViewModelTest {
         videoRepo = FakeVideoRepository()
         thumbStore = FakeThumbnailStore()
         grabber = FakeFrameGrabber()
+        prefs = FakePreferenceRepository()
     }
 
     @After
@@ -64,7 +71,7 @@ class LibraryViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun createVm() = LibraryViewModel(libraryRepo, videoRepo, thumbStore, grabber)
+    private fun createVm() = LibraryViewModel(libraryRepo, videoRepo, thumbStore, grabber, prefs)
 
     @Test
     fun `importVideo 委派授权持久化 docId 去重登记`() = runTest {
@@ -200,6 +207,24 @@ class LibraryViewModelTest {
         assertEquals(URI, libraryRepo.lastOpened.single().first)
     }
 
+    @Test
+    fun `markIntroDone 委派教学标记`() = runTest {
+        val vm = createVm()
+        vm.markIntroDone()
+        advanceUntilIdle()
+
+        assertEquals(listOf(true), prefs.introDoneSet)
+    }
+
+    @Test
+    fun `resetOnboarding 委派重置全部教学标记`() = runTest {
+        val vm = createVm()
+        vm.resetOnboarding()
+        advanceUntilIdle()
+
+        assertEquals(1, prefs.onboardingResetCount)
+    }
+
     // ==== Fakes ====
 
     private class FakeLibraryRepository : VideoLibraryRepository {
@@ -268,6 +293,28 @@ class LibraryViewModelTest {
             grabUris += uri
             lastPositionMs = positionMs
             return frame
+        }
+    }
+
+    private class FakePreferenceRepository : PreferenceRepository {
+        override val settings = MutableStateFlow(AppSettings())
+        override val onboarding = MutableStateFlow(OnboardingStatus())
+        val introDoneSet = mutableListOf<Boolean>()
+        var onboardingResetCount = 0
+
+        override suspend fun saveHistory(entry: HistoryEntry) = Unit
+        override suspend fun loadHistory(uri: String): HistoryEntry? = null
+        override suspend fun removeHistory(uri: String) = Unit
+        override suspend fun setDefaultSpeed(speed: PlaybackSpeed) = Unit
+        override suspend fun setCountdownSec(sec: Int) = Unit
+        override suspend fun setIntroDone(done: Boolean) {
+            introDoneSet += done
+        }
+
+        override suspend fun setPlayerTutorialDone(done: Boolean) = Unit
+        override suspend fun setMoreMenuTutorialDone(done: Boolean) = Unit
+        override suspend fun resetOnboarding() {
+            onboardingResetCount++
         }
     }
 }

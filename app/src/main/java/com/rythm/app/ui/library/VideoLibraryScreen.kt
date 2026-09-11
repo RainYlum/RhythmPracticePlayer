@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -45,18 +46,26 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rythm.app.model.LibraryItem
 import com.rythm.app.ui.common.LocalThumb
+import com.rythm.app.ui.common.TutorialOverlay
+import com.rythm.app.ui.common.TutorialStep
 import com.rythm.app.viewmodel.LibraryViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -76,6 +85,11 @@ fun VideoLibraryScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    // 教学引导：首次使用简介 + 引导导入第一个视频（「再次教学」重置后重新触发）
+    val onboarding by viewModel.onboarding.collectAsStateWithLifecycle()
+    val tutorialBounds = remember { mutableStateMapOf<String, Rect>() }
+    var introTutorialIndex by remember { mutableIntStateOf(-1) }
+    var showReteachDialog by remember { mutableStateOf(false) }
 
     // 导入待办（uri, displayName）：预检通过 → 弹首次备注 Dialog
     var pendingImport by remember { mutableStateOf<Pair<Uri, String>?>(null) }
@@ -105,9 +119,22 @@ fun VideoLibraryScreen(
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("练习视频库") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("练习视频库") },
+                actions = {
+                    // 再次教学：确认后重置三个教学阶段，重新体验完整引导流程
+                    IconButton(onClick = { showReteachDialog = true }) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "再次教学")
+                    }
+                },
+            )
+        },
         floatingActionButton = {
-            FloatingActionButton(onClick = { openDocument.launch(arrayOf("video/*")) }) {
+            FloatingActionButton(
+                onClick = { openDocument.launch(arrayOf("video/*")) },
+                modifier = Modifier.onGloballyPositioned { tutorialBounds["importFab"] = it.boundsInRoot() },
+            ) {
                 Icon(Icons.Filled.Add, contentDescription = "导入视频")
             }
         },
@@ -140,6 +167,13 @@ fun VideoLibraryScreen(
                     }
                 }
             }
+        }
+    }
+
+    // 首次使用教学：数据就绪且未完成时触发（简介 + 引导导入第一个视频）
+    LaunchedEffect(uiState.isLoading, onboarding.introDone) {
+        if (!uiState.isLoading && !onboarding.introDone && introTutorialIndex < 0) {
+            introTutorialIndex = 0
         }
     }
 
@@ -220,6 +254,42 @@ fun VideoLibraryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { editingItem = null }) { Text("取消") }
+            },
+        )
+    }
+
+    // 再次教学确认（重置三个教学阶段后，进入播放页/更多功能时按触发条件重新引导）
+    if (showReteachDialog) {
+        AlertDialog(
+            onDismissRequest = { showReteachDialog = false },
+            title = { Text("再次教学") },
+            text = { Text("将重置全部教学内容（首次引导、播放页教学、更多功能教学），下次进入时重新体验引导流程。\n确认重置？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showReteachDialog = false
+                    viewModel.resetOnboarding()
+                }) { Text("确认重置") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showReteachDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // 首次引导教学 Overlay（置顶）：简介 → 高亮导入按钮
+    if (introTutorialIndex >= 0) {
+        TutorialOverlay(
+            steps = INTRO_TUTORIAL_STEPS,
+            stepIndex = introTutorialIndex,
+            bounds = tutorialBounds,
+            modifier = Modifier.zIndex(10f),
+            onAdvance = {
+                if (introTutorialIndex >= INTRO_TUTORIAL_STEPS.lastIndex) {
+                    introTutorialIndex = -1
+                    viewModel.markIntroDone()
+                } else {
+                    introTutorialIndex++
+                }
             },
         )
     }
@@ -341,3 +411,16 @@ private fun queryDisplayName(context: Context, uri: Uri): String? = runCatching 
 
 private fun formatOpenedAt(timestamp: Long): String =
     SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(timestamp))
+
+/** 首次使用教学（简短介绍 + 引导导入第一个视频）。 */
+private val INTRO_TUTORIAL_STEPS = listOf(
+    TutorialStep(
+        title = "欢迎使用 Rhythm Practice Player",
+        body = "这是一款面向音乐游戏谱面练习的 Android 视频播放器：支持区间循环（AB 点）、多档倍速、逐帧步进、帧标记与沉浸练习模式，帮助你拆解难点、反复打磨。",
+    ),
+    TutorialStep(
+        title = "导入第一个视频",
+        body = "点击右下角 + 按钮，从本地选择视频导入，即可开始练习。",
+        targetKey = "importFab",
+    ),
+)

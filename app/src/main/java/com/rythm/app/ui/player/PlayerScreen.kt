@@ -13,17 +13,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -36,7 +40,10 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.rythm.app.model.OnboardingStatus
 import com.rythm.app.model.PlayerPhase
+import com.rythm.app.ui.common.TutorialOverlay
+import com.rythm.app.ui.common.TutorialStep
 import com.rythm.app.viewmodel.BookmarkViewModel
 import com.rythm.app.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
@@ -63,6 +70,8 @@ fun PlayerScreen(
     val state by playerViewModel.uiState.collectAsStateWithLifecycle()
     val captions by playerViewModel.activeCaptions.collectAsStateWithLifecycle()
     val marks by bookmarkViewModel.marks.collectAsStateWithLifecycle()
+    // 教学引导状态（首次进入播放页教学 / 首次展开更多功能教学）
+    val onboarding by playerViewModel.onboarding.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val view = LocalView.current
@@ -74,6 +83,11 @@ fun PlayerScreen(
     // 沉浸两次手势退出：首次手势（点屏幕/左上角/侧滑返回）仅提示，窗口内第二次才退出
     var exitHintVisible by remember { mutableStateOf(false) }
     var lastExitGestureAt by remember { mutableLongStateOf(0L) }
+    // 教学：目标控件坐标上报（key → 窗口坐标，与 overlay 同坐标系）+ 步骤索引（-1 = 未激活）
+    val tutorialBounds = remember { mutableStateMapOf<String, Rect>() }
+    val panelScrollState = rememberScrollState()
+    var playerTutorialIndex by remember { mutableIntStateOf(-1) }
+    var moreTutorialIndex by remember { mutableIntStateOf(-1) }
 
     fun onImmersiveExitGesture() {
         val now = System.currentTimeMillis()
@@ -141,12 +155,30 @@ fun PlayerScreen(
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { playerViewModel.onStop() }
 
     // 返回键分派（兼拦截边缘滑动返回手势）：倒计时 = 取消，练习播放 = 两次手势退出沉浸（暂停而非退应用），
-    // 其余（控制态/错误） = 弹确认后退出播放页
+    // 其余（控制态/错误） = 弹确认后退出播放页；教学激活时吞掉返回键（须点完教学步骤）
     BackHandler {
+        if (playerTutorialIndex >= 0 || moreTutorialIndex >= 0) return@BackHandler
         when {
             state.isCountdown -> playerViewModel.cancelCountdown()
             state.immersive -> onImmersiveExitGesture()
             else -> requestExit()
+        }
+    }
+
+    // 播放页教学（首次进入播放页且未完成）：READY 控制态触发，面板滚动回顶部保证「更多功能」入口可见
+    LaunchedEffect(state.phase, state.isPlaying, onboarding.playerTutorialDone) {
+        if (playerTutorialIndex < 0 &&
+            state.phase == PlayerPhase.READY && !state.isPlaying && !onboarding.playerTutorialDone
+        ) {
+            panelScrollState.scrollTo(0)
+            playerTutorialIndex = 0
+        }
+    }
+
+    // 更多功能教学：按目标控件所在行滚动面板，保证被讲解的按键可见
+    LaunchedEffect(moreTutorialIndex) {
+        if (moreTutorialIndex >= 0) {
+            panelScrollState.animateScrollTo(if (moreTutorialIndex <= 1) 0 else panelScrollState.maxValue)
         }
     }
 
@@ -185,7 +217,13 @@ fun PlayerScreen(
                 nowMs = nowMs,
                 marks = marks,
                 panelExpanded = panelExpanded,
-                onExpandMore = { panelExpanded = true },
+                tutorialBounds = tutorialBounds,
+                panelScrollState = panelScrollState,
+                onExpandMore = {
+                    panelExpanded = true
+                    // 首次展开「更多功能」→ 触发功能教学（AB 循环/倍速/音频延迟/倒计时/帧标记）
+                    if (!onboarding.moreMenuTutorialDone) moreTutorialIndex = 0
+                },
                 onPlay = { playerViewModel.play() },
                 onPause = { playerViewModel.pause() },
                 onSeek = { playerViewModel.commitScrub(it) },
@@ -230,12 +268,48 @@ fun PlayerScreen(
                 confirmButton = {
                     androidx.compose.material3.TextButton(onClick = {
                         showExitConfirm = false
+                        // 退出前显式落盘本次练习配置（音频延迟等，FR：退出练习保留、按视频恢复），ON_STOP 双保险
+                        playerViewModel.saveHistory()
                         onExit()
                     }) { androidx.compose.material3.Text("退出") }
                 },
                 dismissButton = {
                     androidx.compose.material3.TextButton(onClick = { showExitConfirm = false }) {
                         androidx.compose.material3.Text("取消")
+                    }
+                },
+            )
+        }
+
+        // 教学 Overlay（置顶）：播放页教学 → 完成后标记；更多功能教学 → 完成后标记
+        if (playerTutorialIndex >= 0) {
+            TutorialOverlay(
+                steps = PLAYER_TUTORIAL_STEPS,
+                stepIndex = playerTutorialIndex,
+                bounds = tutorialBounds,
+                fallbackTargets = mapOf(EXIT_HINT_KEY to LEFT_TOP_EXIT_AREA),
+                modifier = Modifier.zIndex(20f),
+                onAdvance = {
+                    if (playerTutorialIndex >= PLAYER_TUTORIAL_STEPS.lastIndex) {
+                        playerTutorialIndex = -1
+                        playerViewModel.markPlayerTutorialDone()
+                    } else {
+                        playerTutorialIndex++
+                    }
+                },
+            )
+        } else if (moreTutorialIndex >= 0) {
+            TutorialOverlay(
+                steps = MORE_TUTORIAL_STEPS,
+                stepIndex = moreTutorialIndex,
+                bounds = tutorialBounds,
+                modifier = Modifier.zIndex(20f),
+                onAdvance = {
+                    if (moreTutorialIndex >= MORE_TUTORIAL_STEPS.lastIndex) {
+                        moreTutorialIndex = -1
+                        playerViewModel.markMoreMenuTutorialDone()
+                    } else {
+                        moreTutorialIndex++
                     }
                 },
             )
@@ -381,3 +455,67 @@ private fun ErrorLayer(message: String, onExit: () -> Unit) {
 
 /** 沉浸两次手势退出窗口（与提示展示同长）：首次手势只提示，窗口内第二次才退出（FR-02.7 防误触）。 */
 private const val EXIT_GESTURE_WINDOW_MS = 1_200L
+
+// ==== 教学步骤（FR：首次使用引导） ====
+
+/** 沉浸退出按钮仅存在于播放态；控制态教学用屏幕左上角示意区域代替。 */
+private const val EXIT_HINT_KEY = "exitHint"
+private val LEFT_TOP_EXIT_AREA = Rect(0f, 0f, 144f, 144f)
+
+/** 播放页教学（导入首个视频后首次进入）：进度条 / 步进 / 播放 / 退出 / 更多功能。 */
+private val PLAYER_TUTORIAL_STEPS = listOf(
+    TutorialStep(
+        title = "拖动进度条",
+        body = "点击或拖动进度条任意位置即可快速定位；暂停画面会逐帧预览，方便找帧。",
+        targetKey = "progressBar",
+    ),
+    TutorialStep(
+        title = "逐帧步进",
+        body = "点击 −0.1s / +0.1s 步进按钮，可精确对齐当前帧，逐帧拆解动作细节。",
+        targetKey = "stepButton",
+    ),
+    TutorialStep(
+        title = "播放练习",
+        body = "点击播放按钮从当前帧开始练习，随时可暂停回到本页面继续调整。",
+        targetKey = "playButton",
+    ),
+    TutorialStep(
+        title = "退出练习",
+        body = "沉浸练习中，双击左上角 × 按钮、或连续两次点按屏幕任意处，即可退出练习。",
+        targetKey = EXIT_HINT_KEY,
+    ),
+    TutorialStep(
+        title = "更多功能",
+        body = "点击右侧「更多功能」按钮，展开 AB 循环、倍速、音频延迟、倒计时、帧标记等高级功能。",
+        targetKey = "moreButton",
+    ),
+)
+
+/** 更多功能教学（首次展开）：AB 循环 / 倍速 / 音频延迟 / 倒计时 / 帧标记。 */
+private val MORE_TUTORIAL_STEPS = listOf(
+    TutorialStep(
+        title = "AB 点循环",
+        body = "点击「AB 设点」设置区间起点与终点，可反复练习难点段落；拖动进度条上的 A/B 标记可微调区间。",
+        targetKey = "loopButton",
+    ),
+    TutorialStep(
+        title = "倍速调整",
+        body = "选择 0.5x–2.0x 六档倍速练习，变速不改变音高，适合由慢到快逐步提速。",
+        targetKey = "speedButton",
+    ),
+    TutorialStep(
+        title = "音频延迟",
+        body = "使用 ±5ms 步进微调音频延迟（±200ms），解决蓝牙耳机或外接音箱的音画不同步；退出练习后自动保留。",
+        targetKey = "audioDelay",
+    ),
+    TutorialStep(
+        title = "倒计时预听",
+        body = "设置 0 / 3 / 5 秒倒计时，播放前预留准备时间；选择 5s 会完整预听 5 秒。",
+        targetKey = "countdownButton",
+    ),
+    TutorialStep(
+        title = "帧标记",
+        body = "点击 + 为当前帧添加标记（可附文字提示），练习时在对应位置显示提醒，点击列表可随时跳转。",
+        targetKey = "markAddButton",
+    ),
+)

@@ -3,10 +3,12 @@ package com.rythm.app.viewmodel
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.rythm.app.data.repository.PreferenceRepository
 import com.rythm.app.data.repository.VideoLibraryRepository
 import com.rythm.app.data.repository.VideoRepository
 import com.rythm.app.data.store.ThumbnailStore
 import com.rythm.app.model.LibraryItem
+import com.rythm.app.model.OnboardingStatus
 import com.rythm.app.player.FrameGrabber
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -34,7 +36,12 @@ class LibraryViewModel(
     private val videoRepository: VideoRepository,
     private val thumbStore: ThumbnailStore,
     private val frameGrabber: FrameGrabber,
+    private val preferenceRepository: PreferenceRepository,
 ) : ViewModel() {
+
+    /** 教学引导状态：首次使用简介 + 引导导入第一个视频（「再次教学」重置后重新触发）。 */
+    val onboarding: StateFlow<OnboardingStatus> = preferenceRepository.onboarding
+        .stateIn(viewModelScope, SharingStarted.Eagerly, OnboardingStatus())
 
     init {
         // 旧库兼容（R-12）：列表出现后为缺失/失效缩略图的条目补生成，失败静默等待下次变化重试
@@ -100,6 +107,16 @@ class LibraryViewModel(
     /** 打开条目：刷新 lastOpenedAt（供排序/最近打开）。 */
     fun markOpened(uri: String) {
         viewModelScope.launch { libraryRepository.updateLastOpened(uri, System.currentTimeMillis()) }
+    }
+
+    /** 首次引导教学完成标记（简介 + 引导导入第一个视频）。 */
+    fun markIntroDone() {
+        viewModelScope.launch { preferenceRepository.setIntroDone(true) }
+    }
+
+    /** 重置全部教学标记（视频库「再次教学」确认后调用，用户可重新体验完整教学流程）。 */
+    fun resetOnboarding() {
+        viewModelScope.launch { preferenceRepository.resetOnboarding() }
     }
 
     /**

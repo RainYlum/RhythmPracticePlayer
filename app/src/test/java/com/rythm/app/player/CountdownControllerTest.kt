@@ -67,11 +67,36 @@ class CountdownControllerTest {
         position = 0L
         val c = controller()
         c.start(fromMs = 10_000L) // position=7000 卡死不再前进
-        now = 105_001L // 超 5000ms
+        now = 108_001L // 超 WATCHDOG(5000) + 前导(3000)ms
         c.onPositionTick(position)
         assertEquals(10_000L, finished)
         assertEquals("倒计时同步异常，已转为正常播放", fallbackMessage)
         assertFalse(c.isActive)
+    }
+
+    @Test
+    fun `start 支持自定义前导窗口_倒计时5s回退5s`() {
+        now = 100_000L
+        position = 12_000L
+        val c = controller()
+        c.start(fromMs = 12_000L, leadMs = 5_000L)
+        // 位置在 S 容差内 → 不预位，直接回退 S−5000（FR-10：5s 前导完整预听）
+        assertEquals(listOf(7_000L), seeks)
+        assertEquals(1, plays)
+        assertTrue(c.isActive)
+    }
+
+    @Test
+    fun `watchdog 随前导窗口放宽_5s前导10s内不误报`() {
+        now = 100_000L
+        position = 0L
+        val c = controller()
+        c.start(fromMs = 10_000L, leadMs = 5_000L) // 回退到 5000，位置卡死
+        now = 109_501L // 超 9500ms < WATCHDOG(5000) + 前导(5000)
+        c.onPositionTick(position)
+        assertEquals(null, finished)
+        assertEquals(null, fallbackMessage)
+        assertTrue(c.isActive)
     }
 
     @Test
