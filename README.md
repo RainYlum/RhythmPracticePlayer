@@ -1,5 +1,7 @@
 # Rhythm Practice Player ｜ 节奏练习播放器
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > A practice-oriented video player built for rhythm game players — watch hand-cam videos at slow speed without pitch change, loop the tricky section with precision, and focus on the chart without any UI distraction.
 >
 > 面向音游玩家的练习专用视频播放器：变速不变调、高精度 A/B 区间练习、毫秒级精细定位、沉浸式练习模式，让"看手元、拆谱面"的练习流程更高效。
@@ -18,7 +20,13 @@
 
 - **纯本地**：不申请任何权限、不访问网络、不上传任何数据
 - **零广告**：无广告、无账号、无遥测（可自行确认代码）
-- **Android 10+**（minSdk 29），当前版本 **1.0.2**
+- **Android 10+**（minSdk 29），当前版本 **1.0.3**
+
+### 下载安装
+
+- **官方发布页**：[rhythm.rylum.top](https://rhythm.rylum.top)（推荐，含功能介绍与更新日志）
+- **GitHub Releases**：[Releases 页面](https://github.com/RainYlum/RhythmPracticePlayer/releases)（最新 APK 下载）
+- 系统要求：Android 10（API 29）及以上
 
 ### 功能特性
 
@@ -72,7 +80,7 @@ gradlew.bat assembleDebug          # Windows
 gradlew.bat assembleRelease
 ```
 
-Release 产物命名约定：`rythm-<version>.apk`（如 `rythm-1.0.2.apk`）。
+Release 产物命名约定：`rhythmplayer-<version>.apk`（如 `rhythmplayer-1.0.3.apk`）。
 
 ### 测试
 
@@ -89,7 +97,7 @@ gradlew.bat connectedDebugAndroidTest      # 仪器冒烟测试（需真机或�
 
 ### 许可证
 
-项目目前尚未附带 LICENSE 文件，开源协议待定（建议选用 MIT 后添加 LICENSE 文件到仓库根目录）。
+本项目基于 [MIT License](LICENSE) 开源，详见 [LICENSE](LICENSE) 文件。
 
 ---
 
@@ -103,7 +111,13 @@ Generic players provide scattered individual capabilities (speed change, looping
 
 - **100% local & private**: no permissions requested, no network access, no data upload
 - **No ads**: no ads, no accounts, no telemetry (verify it yourself in the source)
-- **Android 10+** (minSdk 29), current version **1.0.2**
+- **Android 10+** (minSdk 29), current version **1.0.3**
+
+### Download
+
+- **Official site**: [rhythm.rylum.top](https://rhythm.rylum.top) (features & changelog, recommended)
+- **GitHub Releases**: [Releases page](https://github.com/RainYlum/RhythmPracticePlayer/releases) (latest APK)
+- Requirements: Android 10 (API 29) or above
 
 ### Features
 
@@ -157,7 +171,7 @@ gradlew.bat assembleDebug          # Windows
 gradlew.bat assembleRelease
 ```
 
-Release artifacts are named `rythm-<version>.apk` (e.g. `rythm-1.0.2.apk`).
+Release artifacts are named `rhythmplayer-<version>.apk` (e.g. `rhythmplayer-1.0.3.apk`).
 
 ### Testing
 
@@ -174,4 +188,4 @@ gradlew.bat connectedDebugAndroidTest      # instrumented smoke tests (device or
 
 ### License
 
-The project does not include a LICENSE file yet. A license (e.g. MIT) should be added before publishing; if you publish it as-is, all rights are reserved by default.
+Licensed under the [MIT License](LICENSE). See the [LICENSE](LICENSE) file for details.
